@@ -37,6 +37,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bazel-
 
-      - name: Run verilator tests
+      - name: Run tests
         run: |
-          bazel test //vivado/tests:johnson_counter_test //vivado/tests:weights_replay_test
+          bazel test //...
