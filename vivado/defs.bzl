@@ -783,10 +783,32 @@ def _xsim_test_impl(ctx):
 
     log_runfiles = ctx.runfiles(files = [vivado_log])
 
-    error_parser = "if grep -q Error {}; then\n".format(vivado_log.short_path)
-    error_parser += "cat {}\n".format(vivado_log.short_path)
-    error_parser += "exit 64\n"
-    error_parser += "fi"
+    # Error detection script:
+    # - Match "$error" output format: "Error: " (with colon and space)
+    # - Match Vivado/xsim errors: "ERROR:" (uppercase)
+    # - Match fatal errors: "FATAL" or "$fatal"
+    # - Avoid false positives from module names containing "Error"
+    error_parser = """#!/bin/bash
+LOG_FILE="{log_file}"
+
+# Check for simulation errors (case-sensitive patterns)
+if grep -qE '^Error: |^ERROR:|FATAL_ERROR|\\$fatal' "$LOG_FILE"; then
+    echo "=== Test FAILED - errors detected in simulation log ==="
+    # Show relevant error lines
+    grep -E '^Error: |^ERROR:|FATAL' "$LOG_FILE"
+    exit 1
+fi
+
+# Check that simulation actually completed (look for $finish)
+if ! grep -q '\\$finish' "$LOG_FILE"; then
+    echo "=== Test FAILED - simulation did not complete (no \\$finish) ==="
+    tail -50 "$LOG_FILE"
+    exit 1
+fi
+
+echo "=== Test PASSED ==="
+exit 0
+""".format(log_file = vivado_log.short_path)
 
     ctx.actions.write(
         output = ctx.outputs.executable,

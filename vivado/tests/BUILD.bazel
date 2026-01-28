@@ -14,6 +14,7 @@
 
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_verilator//verilator:defs.bzl", "verilator_cc_library")
 load("@rules_verilator//verilog:defs.bzl", "verilog_library")
 load(
@@ -28,6 +29,17 @@ load(
 package(
     default_applicable_licenses = ["//:package_license"],
     default_visibility = ["//visibility:private"],
+)
+
+test_suite(
+    name = "all_xsim_tests",
+    tags = ["manual"],
+    tests = [
+        ":stream_fifo_xsim_test",
+        ":xsim_smoke_test",
+        ":error_detection_expect_failure_test",
+        ":assert_detection_expect_failure_test",
+    ],
 )
 
 verilog_library(
@@ -86,6 +98,15 @@ verilog_library(
 
 vivado_flow(
     name = "johnson_counter_vivado",
+    module = ":johnson_counter_top",
+    module_top = "johnson_counter_top",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env.sh",
+)
+
+vivado_create_project(
+    name = "johnson_counter_project",
     module = ":johnson_counter_top",
     module_top = "johnson_counter_top",
     part_number = "xczu28dr-ffvg1517-2-e",
@@ -337,3 +358,56 @@ xsim_test(
     tags = ["manual"],
     xilinx_env = ":xilinx_env.sh",
 )
+
+# ============================================================================
+# Error detection verification tests
+# These tests verify that $error, assertions, etc. cause test failure
+# ============================================================================
+
+verilog_library(
+    name = "error_detection_tb",
+    srcs = ["error_detection_tb.sv"],
+)
+
+# This xsim_test is expected to FAIL (uses $error)
+xsim_test(
+    name = "error_detection_xsim",
+    module = ":error_detection_tb",
+    module_top = "error_detection_tb",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env.sh",
+)
+
+verilog_library(
+    name = "assert_detection_tb",
+    srcs = ["assert_detection_tb.sv"],
+)
+
+# This xsim_test is expected to FAIL (assertion failure)
+xsim_test(
+    name = "assert_detection_xsim",
+    module = ":assert_detection_tb",
+    module_top = "assert_detection_tb",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env.sh",
+)
+
+# Expect-failure wrapper tests - these PASS when the underlying xsim test FAILs
+sh_test(
+    name = "error_detection_expect_failure_test",
+    srcs = ["expect_xsim_failure.sh"],
+    args = ["$(location :error_detection_xsim)"],
+    data = [":error_detection_xsim"],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "assert_detection_expect_failure_test",
+    srcs = ["expect_xsim_failure.sh"],
+    args = ["$(location :assert_detection_xsim)"],
+    data = [":assert_detection_xsim"],
+    tags = ["manual"],
+)
+

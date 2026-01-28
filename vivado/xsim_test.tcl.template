@@ -27,9 +27,13 @@ if { {{WITH_WAVEFORM}} } {
     set_property -name {xsim.simulate.wdb} -value "{{WAVE_DB}}" -objects [get_filesets sim_1]
 }
 
+# Set simulation to not run automatically on launch
+set_property -name {xsim.simulate.runtime} -value {0ns} -objects [get_filesets sim_1]
+
 launch_simulation
 
-run all
+# Run simulation until $finish is called
+run -all
 
 if { {{WITH_WAVEFORM}} } {
     puts "To open waveform in vivado, run in tcl console:\n"

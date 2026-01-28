@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<spirit:abstractionDefinition
+    xmlns:xilinx="http://www.xilinx.com"
+    xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <spirit:vendor>{{VENDOR}}</spirit:vendor>
+    <spirit:library>{{LIBRARY}}</spirit:library>
+    <spirit:name>{{NAME}}_rtl</spirit:name>
+    <spirit:version>{{VERSION}}</spirit:version>
+
+    <spirit:busType
+        spirit:vendor="{{VENDOR}}"
+        spirit:library="{{LIBRARY}}"
+        spirit:name="{{NAME}}"
+        spirit:version="{{VERSION}}"/>
+
+    <spirit:ports>
+{{PORTS_XML}}
+    </spirit:ports>
+
+    <spirit:vendorExtensions>
+        <xilinx:abstractionDefinitionInfo>
+            <xilinx:displayName>{{DISPLAY_NAME}} RTL</xilinx:displayName>
+        </xilinx:abstractionDefinitionInfo>
+    </spirit:vendorExtensions>
+</spirit:abstractionDefinition>

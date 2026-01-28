@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<spirit:busDefinition
+    xmlns:xilinx="http://www.xilinx.com"
+    xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <spirit:vendor>{{VENDOR}}</spirit:vendor>
+    <spirit:library>{{LIBRARY}}</spirit:library>
+    <spirit:name>{{NAME}}</spirit:name>
+    <spirit:version>{{VERSION}}</spirit:version>
+
+    <spirit:directConnection>{{DIRECT_CONNECTION}}</spirit:directConnection>
+    <spirit:isAddressable>{{IS_ADDRESSABLE}}</spirit:isAddressable>
+    <spirit:maxMasters>{{MAX_MASTERS}}</spirit:maxMasters>
+    <spirit:maxSlaves>{{MAX_SLAVES}}</spirit:maxSlaves>
+
+    <spirit:description>{{DESCRIPTION}}</spirit:description>
+
+    <spirit:vendorExtensions>
+        <xilinx:busDefinitionInfo>
+            <xilinx:displayName>{{DISPLAY_NAME}}</xilinx:displayName>
+        </xilinx:busDefinitionInfo>
+    </spirit:vendorExtensions>
+</spirit:busDefinition>
