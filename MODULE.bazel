@@ -11,5 +11,11 @@ bazel_dep(name = "rules_license", version = "1.0.0")
 
 # Dev dependencies for tests
 bazel_dep(name = "bazel_skylib", version = "1.8.2", dev_dependency = True)
-bazel_dep(name = "rules_cc", version = "0.2.4", dev_dependency = True)
+bazel_dep(name = "rules_cc", version = "0.2.14", dev_dependency = True)
 bazel_dep(name = "googletest", version = "1.16.0.bcr.1", dev_dependency = True)
+
+# Force compatible googletest version for Bazel 8
+single_version_override(
+    module_name = "googletest",
+    version = "1.16.0.bcr.1",
+)
