@@ -9,7 +9,7 @@ module weights_replay #(
 
   logic [COUNTER_BITS - 1:0] counter;
   logic [2:0] weights_address;
-  logic [7:0] weights [1][8];
+  logic [7:0] weights[1][8];
 
 `ifdef __VERILATOR__
   initial begin

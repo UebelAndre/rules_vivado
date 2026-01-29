@@ -24,7 +24,7 @@ module weights_replay_and_save_tb;
     for (int i = 0; i < 8; i++) begin
       if(weights_replay_and_save_dut.inst.weights_ram_0.inst.weights[0][i]
       !==weights_replay_and_save_dut.inst.weights_replay_0.inst.weights[0][i]) begin
-        $error("RAM value mismatched on index %d!",i);
+        $error("RAM value mismatched on index %d!", i);
         $finish;
       end
     end

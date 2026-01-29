@@ -1,37 +1,10 @@
-# Create a minimal project for interface packaging
-create_project -in_memory -part {{PART_NUMBER}}
-
-# Read HDL source files (interface definitions)
-{{HDL_SOURCE_CONTENT}}
-
 # Create the interface IP directory structure
 file mkdir {{IP_OUTPUT_DIR}}
-file mkdir {{IP_OUTPUT_DIR}}/src
 
 # Copy interface definition files to IP directory
+# Vivado auto-discovers bus definitions and abstraction definitions
+# from IP repository paths - no component.xml wrapper is needed.
 file copy -force {{BUS_DEFINITION_FILE}} {{IP_OUTPUT_DIR}}/
 file copy -force {{ABSTRACTION_DEFINITION_FILE}} {{IP_OUTPUT_DIR}}/
-
-# Create the component.xml for the interface IP
-ipx::create_core {{IP_VENDOR}} {{IP_LIBRARY}} {{INTERFACE_NAME}} {{IP_VERSION}} {{IP_OUTPUT_DIR}}
-
-# Set core properties
-set_property display_name "{{DISPLAY_NAME}}" [ipx::current_core]
-set_property description "{{DESCRIPTION}}" [ipx::current_core]
-set_property vendor_display_name "{{VENDOR_DISPLAY_NAME}}" [ipx::current_core]
-set_property core_revision 1 [ipx::current_core]
-set_property taxonomy "/Interfaces" [ipx::current_core]
-
-# Add the bus definition and abstraction definition as file groups
-ipx::add_file_group -type busDefinition xilinx_busdefinition [ipx::current_core]
-ipx::add_file {{BUS_DEFINITION_BASENAME}} [ipx::get_file_groups xilinx_busdefinition -of_objects [ipx::current_core]]
-
-ipx::add_file_group -type busAbstraction xilinx_busabstraction [ipx::current_core]
-ipx::add_file {{ABSTRACTION_DEFINITION_BASENAME}} [ipx::get_file_groups xilinx_busabstraction -of_objects [ipx::current_core]]
-
-# Save the core
-ipx::update_checksums [ipx::current_core]
-ipx::check_integrity [ipx::current_core]
-ipx::save_core [ipx::current_core]
 
 puts "Interface IP created at {{IP_OUTPUT_DIR}}"

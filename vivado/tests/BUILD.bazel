@@ -19,6 +19,7 @@ load("@rules_verilator//verilator:defs.bzl", "verilator_cc_library")
 load("@rules_verilator//verilog:defs.bzl", "verilog_library")
 load(
     "//vivado:defs.bzl",
+    "vivado_create_interface_ip",
     "vivado_create_ip",
     "vivado_create_project",
     "vivado_flow",
@@ -35,10 +36,10 @@ test_suite(
     name = "all_xsim_tests",
     tags = ["manual"],
     tests = [
+        ":assert_detection_expect_failure_test",
+        ":error_detection_expect_failure_test",
         ":stream_fifo_xsim_test",
         ":xsim_smoke_test",
-        ":error_detection_expect_failure_test",
-        ":assert_detection_expect_failure_test",
     ],
 )
 
@@ -292,32 +293,11 @@ vivado_create_project(
 # This generates the IP-XACT XML files and TCL setup script
 vivado_interface_definition(
     name = "stream_fifo_interface",
+    src = "stream_fifo_if.sv",
     interface_name = "stream_fifo_if",
-    vendor = "cruxml.com",
     library = "interfaces",
+    vendor = "test_vendor",
     version = "1.0",
-    signals = {
-        "data": [
-            "width=DATA_WIDTH",
-            "direction=inout",
-            "description=Data payload",
-        ],
-        "valid": [
-            "width=1",
-            "direction=out",
-            "description=Data valid signal",
-        ],
-        "ready": [
-            "width=1",
-            "direction=in",
-            "description=Ready to accept data",
-        ],
-        "last": [
-            "width=1",
-            "direction=out",
-            "description=Last data in transaction",
-        ],
-    },
 )
 
 # The interface verilog source with IP-XACT files as data
@@ -411,3 +391,161 @@ sh_test(
     tags = ["manual"],
 )
 
+# ============================================================================
+# BRAM Read/Write Splitter - separate read and write interfaces for BRAM
+# ============================================================================
+
+# Read-only BRAM interface definition (IP-XACT)
+vivado_interface_definition(
+    name = "bram_read_only_interface",
+    src = "bram_read_only_if.sv",
+    description = "Read-only BRAM interface with address, enable, data, and valid",
+    interface_name = "bram_read_only_if",
+    library = "interfaces",
+    vendor = "test_vendor",
+    version = "1.0",
+)
+
+# Write-only BRAM interface definition (IP-XACT)
+vivado_interface_definition(
+    name = "bram_write_only_interface",
+    src = "bram_write_only_if.sv",
+    description = "Write-only BRAM interface with address, enable, byte-write-enable, and data",
+    interface_name = "bram_write_only_if",
+    library = "interfaces",
+    vendor = "test_vendor",
+    version = "1.0",
+)
+
+# Interface SV sources with IP-XACT data
+verilog_library(
+    name = "bram_read_only_if",
+    srcs = ["bram_read_only_if.sv"],
+    data = [":bram_read_only_interface"],
+)
+
+verilog_library(
+    name = "bram_write_only_if",
+    srcs = ["bram_write_only_if.sv"],
+    data = [":bram_write_only_interface"],
+)
+
+# Splitter module
+verilog_library(
+    name = "bram_read_write_splitter",
+    srcs = ["bram_read_write_splitter.sv"],
+    deps = [
+        ":bram_read_only_if",
+        ":bram_write_only_if",
+    ],
+)
+
+# Interface IP packages (make custom interfaces available in Vivado IP catalog)
+vivado_create_interface_ip(
+    name = "bram_read_only_interface_ip",
+    interface = ":bram_read_only_interface",
+    module = ":bram_read_only_if",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)
+
+vivado_create_interface_ip(
+    name = "bram_write_only_interface_ip",
+    interface = ":bram_write_only_interface",
+    module = ":bram_write_only_if",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)
+
+# IP wrapper with flat ports and X_INTERFACE directives
+verilog_library(
+    name = "bram_read_write_splitter_wrapper",
+    srcs = ["bram_read_write_splitter_wrapper.sv"],
+    deps = [":bram_read_write_splitter"],
+)
+
+# Packaged IP block
+vivado_create_ip(
+    name = "bram_read_write_splitter_ip",
+    ip_blocks = [
+        ":bram_read_only_interface_ip",
+        ":bram_write_only_interface_ip",
+    ],
+    ip_library = "ip",
+    ip_vendor = "test_vendor",
+    ip_version = "1.0",
+    module = ":bram_read_write_splitter_wrapper",
+    module_top = "bram_read_write_splitter_wrapper",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)
+
+# ============================================================================
+# Test reader/writer IP blocks and interface example project
+# ============================================================================
+
+# Test reader - drives bram_read_only_if with sequential reads
+verilog_library(
+    name = "test_reader",
+    srcs = ["test_reader.sv"],
+    data = [":bram_read_only_interface"],
+)
+
+vivado_create_ip(
+    name = "test_reader_ip",
+    ip_blocks = [":bram_read_only_interface_ip"],
+    ip_library = "ip",
+    ip_vendor = "test_vendor",
+    ip_version = "1.0",
+    module = ":test_reader",
+    module_top = "test_reader",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)
+
+# Test writer - drives bram_write_only_if with sequential writes
+verilog_library(
+    name = "test_writer",
+    srcs = ["test_writer.sv"],
+    data = [":bram_write_only_interface"],
+)
+
+vivado_create_ip(
+    name = "test_writer_ip",
+    ip_blocks = [":bram_write_only_interface_ip"],
+    ip_library = "ip",
+    ip_vendor = "test_vendor",
+    ip_version = "1.0",
+    module = ":test_writer",
+    module_top = "test_writer",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)
+
+# Interface example project top level
+verilog_library(
+    name = "interface_example_top",
+    srcs = ["interface_example_top.sv"],
+    data = ["interface_example.tcl"],
+)
+
+vivado_create_project(
+    name = "interface_example_project",
+    ip_blocks = [
+        ":bram_read_only_interface_ip",
+        ":bram_write_only_interface_ip",
+        ":bram_read_write_splitter_ip",
+        ":test_reader_ip",
+        ":test_writer_ip",
+    ],
+    module = ":interface_example_top",
+    module_top = "interface_example_top",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["manual"],
+    xilinx_env = ":xilinx_env_2025_1.sh",
+)

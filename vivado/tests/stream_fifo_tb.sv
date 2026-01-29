@@ -9,8 +9,8 @@ module stream_fifo_tb;
   parameter int DATA_WIDTH = 64;
   parameter int FIFO_DEPTH = 8;
 
-  logic clk;
-  logic rst_n;
+  logic                  clk;
+  logic                  rst_n;
 
   // Interface signals
   logic [ADDR_WIDTH-1:0] wr_addr;

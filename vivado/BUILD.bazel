@@ -18,5 +18,7 @@ exports_files([
     "bus_definition.xml.template",
     "abstraction_definition.xml.template",
     "interface_setup.tcl.template",
+    "parse_sv_interface.py",
+    "generate_interface_xml.py",
     "xilinx_keyfile.txt",
 ])

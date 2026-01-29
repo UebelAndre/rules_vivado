@@ -1,10 +1,10 @@
-#include <iostream>
-#include <fstream>
-#include <string>
-#include <memory>
-
 #include <verilated.h>
 #include <verilated_vcd_c.h>
+
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <string>
 
 #include "Vweights_replay.h"
 #include "gtest/gtest.h"
@@ -17,10 +17,10 @@ class WeightsReplayTest : public testing::Test {
  protected:
   void Clock(Vweights_replay* v_weights_replay, int n = 1) {
     for (int i = 0; i < n; i++) {
-        v_weights_replay->clk = 0;
-        v_weights_replay->eval();
-        v_weights_replay->clk = 1;
-        v_weights_replay->eval();
+      v_weights_replay->clk = 0;
+      v_weights_replay->eval();
+      v_weights_replay->clk = 1;
+      v_weights_replay->eval();
     }
   }
 
@@ -54,9 +54,12 @@ TEST_F(WeightsReplayTest, load_and_compare) {
   int expected_values_index = 0;
   for (int cycles = 0; cycles < kNumCycles; cycles++) {
     Clock(v_weights_replay.get());
-    EXPECT_EQ(v_weights_replay->shift_reg, expected_values[expected_values_index]) << cycles;
+    EXPECT_EQ(v_weights_replay->shift_reg,
+              expected_values[expected_values_index])
+        << cycles;
     if (cycles % (1 << kCounterBits) == (1 << kCounterBits) - 1) {
-      expected_values_index = (expected_values_index + 1) % expected_values.size();
+      expected_values_index =
+          (expected_values_index + 1) % expected_values.size();
     }
   }
 }

@@ -75,6 +75,10 @@ def get_content_from_files(all_files):
             tcl_content += "source " + file.path + "\n"
         elif file.extension == "xdc":
             constraints_content += "read_xdc " + file.path + "\n"
+        elif file.extension in ["xml", "json"]:
+            # Skip IP-XACT metadata and generated JSON files; these are
+            # handled by their own rules (vivado_interface_definition, etc.).
+            pass
         else:
             # Use import files instead to make sure generic files like coef and txt are added to the project.
             hdl_source_content += "import_files " + file.path + "\n"
@@ -125,6 +129,8 @@ def generate_ip_block_tcl(ip_blocks):
             ip_tcl += "{} ".format(repo.path)
     ip_tcl += "] [current_project]\n"
     for ip_block in ip_blocks:
+        if ip_block[VivadoIPBlockInfo].is_interface:
+            continue
         ip_tcl += "create_ip -name {} -vendor {} -library {} -version {} -module_name {}\n".format(
             ip_block[VivadoIPBlockInfo].module_top,
             ip_block[VivadoIPBlockInfo].vendor,
@@ -958,6 +964,7 @@ def _vivado_create_ip_impl(ctx):
     return [
         ip_block_outputs[0],
         VivadoIPBlockInfo(
+            is_interface = False,
             repo = [ip_dir] + ip_block_dirs,
             vendor = ctx.attr.ip_vendor,
             library = ctx.attr.ip_library,
@@ -1031,172 +1038,86 @@ vivado_create_ip = rule(
     ],
 )
 
-def _generate_port_xml(signal):
-    """Generate XML for a single port in the abstraction definition.
-
-    Args:
-        signal: A dict with keys: name, direction_master, direction_slave, qualifier, width, optional
-
-    Returns:
-        XML string for the port definition.
-    """
-    logical_name = signal["name"].upper()
-    presence = "optional" if signal.get("optional", False) else "required"
-
-    # Build qualifier section if needed
-    qualifier_xml = ""
-    qualifier = signal.get("qualifier", "")
-    if qualifier == "address":
-        qualifier_xml = """
-                <spirit:qualifier>
-                    <spirit:isAddress>true</spirit:isAddress>
-                </spirit:qualifier>"""
-    elif qualifier == "data":
-        qualifier_xml = """
-                <spirit:qualifier>
-                    <spirit:isData>true</spirit:isData>
-                </spirit:qualifier>"""
-    elif qualifier == "clock":
-        qualifier_xml = """
-                <spirit:qualifier>
-                    <spirit:isClock>true</spirit:isClock>
-                </spirit:qualifier>"""
-    elif qualifier == "reset":
-        qualifier_xml = """
-                <spirit:qualifier>
-                    <spirit:isReset>true</spirit:isReset>
-                </spirit:qualifier>"""
-
-    # Width element (only for single-bit signals without explicit width)
-    width = signal.get("width", 1)
-    width_xml = ""
-    if width == 1:
-        width_xml = """
-                    <spirit:width>1</spirit:width>"""
-    elif type(width) == type(""):
-        # Parameterized width - don't include width element
-        pass
-    else:
-        width_xml = """
-                    <spirit:width>{}</spirit:width>""".format(width)
-
-    dir_master = signal.get("direction_master", "out")
-    dir_slave = signal.get("direction_slave", "in")
-
-    return """
-        <spirit:port>
-            <spirit:logicalName>{logical_name}</spirit:logicalName>
-            <spirit:description>{name} signal</spirit:description>
-            <spirit:wire>{qualifier_xml}
-                <spirit:onMaster>
-                    <spirit:presence>{presence}</spirit:presence>{width_xml}
-                    <spirit:direction>{dir_master}</spirit:direction>
-                </spirit:onMaster>
-                <spirit:onSlave>
-                    <spirit:presence>{presence}</spirit:presence>{width_xml}
-                    <spirit:direction>{dir_slave}</spirit:direction>
-                </spirit:onSlave>
-            </spirit:wire>
-        </spirit:port>""".format(
-        logical_name = logical_name,
-        name = signal["name"],
-        qualifier_xml = qualifier_xml,
-        presence = presence,
-        width_xml = width_xml,
-        dir_master = dir_master,
-        dir_slave = dir_slave,
-    )
-
-def _parse_signal_attrs(signal_name, attrs_list):
-    """Parse a list of 'key=value' strings into a signal dict.
-
-    Args:
-        signal_name: The name of the signal
-        attrs_list: List of strings like ['direction_master=out', 'qualifier=address']
-
-    Returns:
-        Dict with signal attributes
-    """
-    signal = {"name": signal_name}
-    for attr in attrs_list:
-        if "=" in attr:
-            key, value = attr.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if key == "optional":
-                signal[key] = value.lower() == "true"
-            elif key == "width":
-                # Width can be an integer or a parameter name (string)
-                if value.isdigit():
-                    signal[key] = int(value)
-                else:
-                    signal[key] = value  # Keep as string for parameterized widths
-            else:
-                signal[key] = value
-    return signal
-
 def _vivado_interface_definition_impl(ctx):
-    """Implementation of vivado_interface_definition rule."""
+    """Implementation of vivado_interface_definition rule.
+
+    Uses two chained actions:
+      1. Parse SV file -> signals JSON (overridable parser)
+      2. Generate XML/TCL from JSON + templates (internal generator)
+    """
     name = ctx.attr.interface_name
     vendor = ctx.attr.vendor
     library = ctx.attr.library
     version = ctx.attr.version
-    display_name = name.replace("_", " ").title() + " Interface"
 
-    # Generate ports XML from signals
-    ports_xml = ""
-    for signal_name, attrs_list in ctx.attr.signals.items():
-        signal = _parse_signal_attrs(signal_name, attrs_list)
-        ports_xml += _generate_port_xml(signal)
+    sv_file = ctx.file.src
+    parser = ctx.file.parser
+    generator = ctx.file._generator
 
-    # Generate bus definition XML
+    # Action 1: parse SV -> JSON
+    signals_json = ctx.actions.declare_file("{}_signals.json".format(name))
+    ctx.actions.run_shell(
+        command = "python3 {} --input {} --output {}".format(
+            parser.path,
+            sv_file.path,
+            signals_json.path,
+        ),
+        inputs = [parser, sv_file],
+        outputs = [signals_json],
+    )
+
+    # Action 2: generate XML/TCL from JSON + templates
     bus_def_file = ctx.actions.declare_file("{}.xml".format(name))
-    ctx.actions.expand_template(
-        template = ctx.file.bus_definition_template,
-        output = bus_def_file,
-        substitutions = {
-            "{{VENDOR}}": vendor,
-            "{{LIBRARY}}": library,
-            "{{NAME}}": name,
-            "{{VERSION}}": version,
-            "{{DIRECT_CONNECTION}}": "true" if ctx.attr.direct_connection else "false",
-            "{{IS_ADDRESSABLE}}": "true" if ctx.attr.is_addressable else "false",
-            "{{MAX_MASTERS}}": str(ctx.attr.max_masters),
-            "{{MAX_SLAVES}}": str(ctx.attr.max_slaves),
-            "{{DESCRIPTION}}": ctx.attr.description if ctx.attr.description else display_name,
-            "{{DISPLAY_NAME}}": display_name,
-        },
-    )
-
-    # Generate abstraction definition XML
     abs_def_file = ctx.actions.declare_file("{}_rtl.xml".format(name))
-    ctx.actions.expand_template(
-        template = ctx.file.abstraction_definition_template,
-        output = abs_def_file,
-        substitutions = {
-            "{{VENDOR}}": vendor,
-            "{{LIBRARY}}": library,
-            "{{NAME}}": name,
-            "{{VERSION}}": version,
-            "{{DISPLAY_NAME}}": display_name,
-            "{{PORTS_XML}}": ports_xml,
-        },
-    )
-
-    # Generate TCL setup file
     setup_tcl_file = ctx.actions.declare_file("{}_if_setup.tcl".format(name))
-    version_underscore = version.replace(".", "_")
-    ctx.actions.expand_template(
-        template = ctx.file.interface_setup_template,
-        output = setup_tcl_file,
-        substitutions = {
-            "{{VENDOR}}": vendor,
-            "{{LIBRARY}}": library,
-            "{{NAME}}": name,
-            "{{VERSION}}": version,
-            "{{VERSION_UNDERSCORE}}": version_underscore,
-            "{{SRC_DIR}}": bus_def_file.dirname,
-        },
+
+    description = ctx.attr.description if ctx.attr.description else ""
+
+    ctx.actions.run_shell(
+        command = " ".join([
+            "python3",
+            generator.path,
+            "--signals-json",
+            signals_json.path,
+            "--bus-def-template",
+            ctx.file.bus_definition_template.path,
+            "--abs-def-template",
+            ctx.file.abstraction_definition_template.path,
+            "--setup-tcl-template",
+            ctx.file.interface_setup_template.path,
+            "--bus-def-output",
+            bus_def_file.path,
+            "--abs-def-output",
+            abs_def_file.path,
+            "--setup-tcl-output",
+            setup_tcl_file.path,
+            "--vendor",
+            vendor,
+            "--library",
+            library,
+            "--name",
+            name,
+            "--version",
+            version,
+            "--direct-connection",
+            "true" if ctx.attr.direct_connection else "false",
+            "--is-addressable",
+            "true" if ctx.attr.is_addressable else "false",
+            "--max-masters",
+            str(ctx.attr.max_masters),
+            "--max-slaves",
+            str(ctx.attr.max_slaves),
+            "--description",
+            "'{}'".format(description),
+        ]),
+        inputs = [
+            generator,
+            signals_json,
+            ctx.file.bus_definition_template,
+            ctx.file.abstraction_definition_template,
+            ctx.file.interface_setup_template,
+        ],
+        outputs = [bus_def_file, abs_def_file, setup_tcl_file],
     )
 
     outputs = [bus_def_file, abs_def_file, setup_tcl_file]
@@ -1222,6 +1143,11 @@ vivado_interface_definition = rule(
             doc = "The name of the interface (e.g., 'hbm_reader').",
             mandatory = True,
         ),
+        "src": attr.label(
+            doc = "The SystemVerilog interface source file to parse.",
+            mandatory = True,
+            allow_single_file = [".sv"],
+        ),
         "vendor": attr.string(
             doc = "The vendor VLNV component (e.g., 'mycompany.com').",
             mandatory = True,
@@ -1234,16 +1160,14 @@ vivado_interface_definition = rule(
             doc = "The version VLNV component (e.g., '1.0').",
             default = "1.0",
         ),
-        "signals": attr.string_list_dict(
-            doc = """Dictionary of signal definitions. Each signal should have:
-                - name: Signal name
-                - direction_master: 'in' or 'out' for master modport
-                - direction_slave: 'in' or 'out' for slave modport
-                - qualifier: 'address', 'data', 'clock', 'reset', or '' (optional)
-                - width: Signal width (optional, defaults to 1)
-                - optional: 'true' or 'false' (optional, defaults to 'false')
-            """,
-            mandatory = True,
+        "parser": attr.label(
+            doc = "Python parser script (SV -> JSON). Override to customize SV parsing.",
+            default = "//vivado:parse_sv_interface.py",
+            allow_single_file = [".py"],
+        ),
+        "_generator": attr.label(
+            default = "//vivado:generate_interface_xml.py",
+            allow_single_file = [".py"],
         ),
         "description": attr.string(
             doc = "Description for the interface.",
@@ -1339,6 +1263,7 @@ def _vivado_create_interface_ip_impl(ctx):
     return [
         default_info[0],
         VivadoIPBlockInfo(
+            is_interface = True,
             repo = [ip_dir],
             vendor = interface_info.vendor,
             library = interface_info.library,

@@ -25,25 +25,32 @@ module stream_fifo #(
     input  logic                  rd_ready,
 
     // Status
-    output logic                  overflow,
-    output logic                  underflow,
-    output logic [          15:0] fill_level
+    output logic        overflow,
+    output logic        underflow,
+    output logic [15:0] fill_level
 );
 
   // Internal storage
-  logic [DATA_WIDTH-1:0] mem         [FIFO_DEPTH];
-  logic [ADDR_WIDTH-1:0] addr_mem    [FIFO_DEPTH];
+  logic [      DATA_WIDTH-1:0] mem     [FIFO_DEPTH];
+  logic [      ADDR_WIDTH-1:0] addr_mem[FIFO_DEPTH];
 
   // Pointers
   logic [$clog2(FIFO_DEPTH):0] wr_ptr;
   logic [$clog2(FIFO_DEPTH):0] rd_ptr;
 
   // Status
-  logic full;
-  logic empty;
+  logic                        full;
+  logic                        empty;
 
-  assign full = (wr_ptr[$clog2(FIFO_DEPTH)] != rd_ptr[$clog2(FIFO_DEPTH)]) &&
-                (wr_ptr[$clog2(FIFO_DEPTH)-1:0] == rd_ptr[$clog2(FIFO_DEPTH)-1:0]);
+  assign full = (wr_ptr[$clog2(
+      FIFO_DEPTH
+  )] != rd_ptr[$clog2(
+      FIFO_DEPTH
+  )]) && (wr_ptr[$clog2(
+      FIFO_DEPTH
+  )-1:0] == rd_ptr[$clog2(
+      FIFO_DEPTH
+  )-1:0]);
   assign empty = (wr_ptr == rd_ptr);
 
   assign wr_ready = !full;
@@ -54,7 +61,7 @@ module stream_fifo #(
   // Write logic
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      wr_ptr <= '0;
+      wr_ptr   <= '0;
       overflow <= 1'b0;
     end else begin
       overflow <= 1'b0;
