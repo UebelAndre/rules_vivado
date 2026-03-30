@@ -1139,9 +1139,53 @@ vivado_interface_definition = rule(
     implementation = _vivado_interface_definition_impl,
     doc = "Generate Vivado IP-XACT interface definition files (bus definition and abstraction definition XML)",
     attrs = {
+        "abstraction_definition_template": attr.label(
+            doc = "The abstraction definition XML template.",
+            default = "//vivado:abstraction_definition.xml.template",
+            allow_single_file = [".template"],
+        ),
+        "bus_definition_template": attr.label(
+            doc = "The bus definition XML template.",
+            default = "//vivado:bus_definition.xml.template",
+            allow_single_file = [".template"],
+        ),
+        "description": attr.string(
+            doc = "Description for the interface.",
+            default = "",
+        ),
+        "direct_connection": attr.bool(
+            doc = "Whether direct connections are allowed.",
+            default = True,
+        ),
         "interface_name": attr.string(
             doc = "The name of the interface (e.g., 'hbm_reader').",
             mandatory = True,
+        ),
+        "interface_setup_template": attr.label(
+            doc = "The interface setup TCL template.",
+            default = "//vivado:interface_setup.tcl.template",
+            allow_single_file = [".template"],
+        ),
+        "is_addressable": attr.bool(
+            doc = "Whether the interface is addressable.",
+            default = True,
+        ),
+        "library": attr.string(
+            doc = "The library VLNV component (e.g., 'interface').",
+            default = "interface",
+        ),
+        "max_masters": attr.int(
+            doc = "Maximum number of masters.",
+            default = 1,
+        ),
+        "max_slaves": attr.int(
+            doc = "Maximum number of slaves.",
+            default = 1,
+        ),
+        "parser": attr.label(
+            doc = "Python parser script (SV -> JSON). Override to customize SV parsing.",
+            default = "//vivado:parse_sv_interface.py",
+            allow_single_file = [".py"],
         ),
         "src": attr.label(
             doc = "The SystemVerilog interface source file to parse.",
@@ -1152,57 +1196,13 @@ vivado_interface_definition = rule(
             doc = "The vendor VLNV component (e.g., 'mycompany.com').",
             mandatory = True,
         ),
-        "library": attr.string(
-            doc = "The library VLNV component (e.g., 'interface').",
-            default = "interface",
-        ),
         "version": attr.string(
             doc = "The version VLNV component (e.g., '1.0').",
             default = "1.0",
         ),
-        "parser": attr.label(
-            doc = "Python parser script (SV -> JSON). Override to customize SV parsing.",
-            default = "//vivado:parse_sv_interface.py",
-            allow_single_file = [".py"],
-        ),
         "_generator": attr.label(
             default = "//vivado:generate_interface_xml.py",
             allow_single_file = [".py"],
-        ),
-        "description": attr.string(
-            doc = "Description for the interface.",
-            default = "",
-        ),
-        "direct_connection": attr.bool(
-            doc = "Whether direct connections are allowed.",
-            default = True,
-        ),
-        "is_addressable": attr.bool(
-            doc = "Whether the interface is addressable.",
-            default = True,
-        ),
-        "max_masters": attr.int(
-            doc = "Maximum number of masters.",
-            default = 1,
-        ),
-        "max_slaves": attr.int(
-            doc = "Maximum number of slaves.",
-            default = 1,
-        ),
-        "bus_definition_template": attr.label(
-            doc = "The bus definition XML template.",
-            default = "//vivado:bus_definition.xml.template",
-            allow_single_file = [".template"],
-        ),
-        "abstraction_definition_template": attr.label(
-            doc = "The abstraction definition XML template.",
-            default = "//vivado:abstraction_definition.xml.template",
-            allow_single_file = [".template"],
-        ),
-        "interface_setup_template": attr.label(
-            doc = "The interface setup TCL template.",
-            default = "//vivado:interface_setup.tcl.template",
-            allow_single_file = [".template"],
         ),
     },
     provides = [
@@ -1276,6 +1276,15 @@ vivado_create_interface_ip = rule(
     implementation = _vivado_create_interface_ip_impl,
     doc = "Package a Vivado interface definition as an IP block. Unlike vivado_create_ip, this does not require a top module.",
     attrs = {
+        "create_interface_ip_template": attr.label(
+            doc = "The TCL template for creating interface IP.",
+            default = "//vivado:create_interface_ip.tcl.template",
+            allow_single_file = [".template"],
+        ),
+        "description": attr.string(
+            doc = "Description for the IP block.",
+            default = "",
+        ),
         "interface": attr.label(
             doc = "The interface definition to package.",
             providers = [VivadoInterfaceInfo],
@@ -1289,18 +1298,9 @@ vivado_create_interface_ip = rule(
             doc = "The targeted xilinx part.",
             mandatory = True,
         ),
-        "description": attr.string(
-            doc = "Description for the IP block.",
-            default = "",
-        ),
         "vendor_display_name": attr.string(
             doc = "Display name for the vendor.",
             default = "",
-        ),
-        "create_interface_ip_template": attr.label(
-            doc = "The TCL template for creating interface IP.",
-            default = "//vivado:create_interface_ip.tcl.template",
-            allow_single_file = [".template"],
         ),
         "xilinx_env": attr.label(
             doc = "A shell script to source the vivado environment and " +

@@ -1,0 +1,7 @@
+# {version}
+
+```python
+bazel_dep(name = "rules_vivado", version = "{version}")
+```
+
+Additional documentation can be found at: https://github.com/hw-bzl/rules_vivado
