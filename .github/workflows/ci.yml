@@ -21,7 +21,7 @@ jobs:
 
       - name: Run buildifier
         run: |
-          buildifier -mode=check -lint=warn -r .
+          buildifier -lint=warn -mode=check -warnings=all -r .
 
   test:
     name: Verilator Tests
