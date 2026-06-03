@@ -1,0 +1,28 @@
+load("//vivado:defs.bzl", "vivado_export_simulation")
+
+# `vivado_export_simulation` matrix — exercise the `simulator` choice
+# list on all four supported targets against the shared nested-IP
+# from //tests/weights_replay/and_save.
+#
+# `module_top` is required when `ip_blocks` holds a
+# `vivado_create_ip`-style packaged IP: that IP's provider has
+# neither `configured_instance` nor `instantiable` populated, so the
+# rule's auto-derive can't pick a sim top. Passing it explicitly here
+# both unblocks the action AND covers the explicit-`module_top`
+# code path.
+[
+    vivado_export_simulation(
+        name = "weights_replay_and_save_export_{}".format(_sim),
+        ip_blocks = ["//tests/weights_replay/and_save:weights_replay_and_save_ip"],
+        module_top = "weights_replay_and_save",
+        part_number = "xczu28dr-ffvg1517-2-e",
+        simulator = _sim,
+        tags = ["requires-vivado"],
+    )
+    for _sim in [
+        "questa",
+        "riviera",
+        "xcelium",
+        "xsim",
+    ]
+]

@@ -15,9 +15,10 @@ and synthesis. The build phases are each their own rule
 ([`vivado_synthesize`](./vivado_synthesis.md),
 [`vivado_placement`](./vivado_implementation.md),
 [`vivado_routing`](./vivado_implementation.md),
-[`vivado_write_bitstream`](./vivado_bitstream.md), …) so checkpoints are
-cached between phases, or you can chain the whole flow with the
-`vivado_flow` macro.
+[`vivado_write_bitstream`](./vivado_bitstream.md), …) so each phase's
+checkpoint and reports are addressable as their own targets — build
+`:my_synth` when you only want the synth `.dcp`, or `:my_bitstream`
+for the end-to-end result.
 
 The Xilinx install itself is resolved via a registered
 [`vivado_toolchain`](./toolchains.md) — there is no per-target install
@@ -26,7 +27,8 @@ path to configure once a toolchain is in place.
 ## Quick start
 
 The walkthrough below takes a Verilog top module from source to
-bitstream with the `vivado_flow` macro.
+bitstream by composing the per-phase rules directly — that's the
+shape the ruleset is designed around.
 
 ### `MODULE.bazel`
 
@@ -94,7 +96,15 @@ endmodule
 
 ```python
 load("@rules_verilog//verilog:defs.bzl", "verilog_library")
-load("@rules_vivado//vivado:defs.bzl", "vivado_flow")
+load(
+    "@rules_vivado//vivado:defs.bzl",
+    "vivado_place_optimize",
+    "vivado_placement",
+    "vivado_routing",
+    "vivado_synthesis_optimize",
+    "vivado_synthesize",
+    "vivado_write_bitstream",
+)
 
 verilog_library(
     name = "hello",
@@ -102,11 +112,36 @@ verilog_library(
     data = ["hello.xdc"],
 )
 
-vivado_flow(
-    name = "hello_bitstream",
+vivado_synthesize(
+    name = "hello_synth",
     module = ":hello",
     module_top = "hello",
-    part_number = "xczu28dr-ffvg1517-2-e",
+    part_number = "xc7a35ticsg324-1L",
+)
+
+vivado_synthesis_optimize(
+    name = "hello_synth_opt",
+    checkpoint = ":hello_synth",
+)
+
+vivado_placement(
+    name = "hello_placement",
+    checkpoint = ":hello_synth_opt",
+)
+
+vivado_place_optimize(
+    name = "hello_place_opt",
+    checkpoint = ":hello_placement",
+)
+
+vivado_routing(
+    name = "hello_route",
+    checkpoint = ":hello_place_opt",
+)
+
+vivado_write_bitstream(
+    name = "hello_bitstream",
+    checkpoint = ":hello_route",
 )
 ```
 
@@ -115,21 +150,20 @@ vivado_flow(
 ```text
 $ bazel build //hello:hello_bitstream
 $ ls bazel-bin/hello/
-hello_bitstream.bit  hello_bitstream_route.dcp  ...
+hello_bitstream.bit  hello_route.dcp  ...
 ```
 
-`vivado_flow` is a convenience macro — it expands to the per-phase
-rules below so each checkpoint is cached on its own:
+Every intermediate target is buildable in isolation:
 
-- `hello_bitstream_synth` — synthesis (`.dcp`)
-- `hello_bitstream_synth_opt` — post-synthesis optimization
-- `hello_bitstream_placement` — placement
-- `hello_bitstream_place_opt` — post-placement optimization
-- `hello_bitstream_route` — routing
-- `hello_bitstream` — final `.bit`
+- `:hello_synth` — synthesis (`.dcp`)
+- `:hello_synth_opt` — post-synthesis optimization
+- `:hello_placement` — placement
+- `:hello_place_opt` — post-placement optimization
+- `:hello_route` — routing
+- `:hello_bitstream` — final `.bit`
 
-Build any one of them directly to stop the flow early or to inspect
-intermediate reports.
+Build one directly to stop the flow early or to inspect the reports
+that phase writes.
 
 ## Going further
 

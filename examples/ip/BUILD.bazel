@@ -1,0 +1,36 @@
+load("@rules_verilog//verilog:defs.bzl", "verilog_library")
+load(
+    "@rules_vivado//vivado:defs.bzl",
+    "vivado_create_ip",
+)
+
+# ---------------------------------------------------------------------------
+# vivado_create_ip — bundle an HDL module into a Vivado IP repo tree.
+#
+# The output TreeArtifact ships a `component.xml`, `.xci`, and any
+# supporting Tcl. Downstream `vivado_synthesize` / `vivado_create_project`
+# targets pick it up via their `ip_blocks` attr. `ip_vendor` /
+# `ip_library` / `ip_version` together form the VLNV that Vivado uses
+# to look the IP up in the catalog.
+# ---------------------------------------------------------------------------
+
+verilog_library(
+    name = "adder",
+    srcs = ["adder.sv"],
+)
+
+vivado_create_ip(
+    name = "adder_ip",
+    ip_library = "arith",
+    ip_vendor = "example_vendor",
+    ip_version = "0.1",
+    module = ":adder",
+    module_top = "adder",
+    part_number = "xc7a35ticsg324-1L",
+)
+
+# See `//interface:BUILD.bazel` for `vivado_create_interface_ip` and
+# `vivado_interface_definition` demonstrations. Instantiating a
+# pre-configured Xilinx IP from a shipped `.xci` (as opposed to
+# packaging your own HDL) is covered by `vivado_xci` — the shape is
+# `vivado_xci(name=..., src="path/to/foo.xci", ...)`.

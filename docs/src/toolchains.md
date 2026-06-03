@@ -39,12 +39,6 @@ The [`vivado_toolchain`](./vivado_toolchain.md) docstring has the
 full multi-version walkthrough — `platform(...)` setup,
 `register_execution_platforms`, and the `--platforms` switch.
 
-For per-target switching without a global flag, use a wrapper rule
-with `cfg = transition(...)`; see
-[`tests/transition.bzl`](https://github.com/hw-bzl/rules_vivado/blob/main/tests/transition.bzl)
-for a `with_vivado_version` wrapper that takes a list of targets and
-pins the version for the whole group.
-
 Constraints are the only mechanism — there is no parallel build-setting
 / flag-driven path. This keeps per-version metadata (constraints,
 `exec_properties` like `container-image`) all on the platform object

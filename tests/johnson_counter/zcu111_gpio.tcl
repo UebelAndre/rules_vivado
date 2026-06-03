@@ -23,11 +23,16 @@ set script_folder [_tcl::get_script_folder]
 set scripts_vivado_version 2021.2
 set current_vivado_version [version -short]
 
+# Version check relaxed for the rules_vivado test harness: the
+# vendored BD Tcl was captured from Vivado 2021.2, but tests run
+# against whatever Vivado ships in the CI container (2024.2 today,
+# forward-compatible with 2025.1). Vivado auto-upgrades any stock
+# IPs it recognizes; a real IP-version drift will still surface as
+# a downstream synth error. Regenerate this script via
+# `write_bd_tcl` in your current Vivado if you need a bit-exact
+# match.
 if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
-   puts ""
-   catch {common::send_gid_msg -ssname BD::TCL -id 2041 -severity "ERROR" "This script was generated using Vivado <$scripts_vivado_version> and is being run in <$current_vivado_version> of Vivado. Please run the script in Vivado <$scripts_vivado_version> then open the design in Vivado <$current_vivado_version>. Upgrade the design by running \"Tools => Report => Report IP Status...\", then run write_bd_tcl to create an updated script."}
-
-   return 1
+   puts "WARNING: BD Tcl was captured in Vivado <$scripts_vivado_version>; running in <$current_vivado_version>. Continuing — expect per-IP upgrade warnings during create_bd."
 }
 
 ################################################################
@@ -125,7 +130,7 @@ set bCheckIPs 1
 if { $bCheckIPs == 1 } {
    set list_check_ips "\ 
 xilinx.com:ip:xlslice:1.0\
-xilinx.com:ip:zynq_ultra_ps_e:3.3\
+xilinx.com:ip:zynq_ultra_ps_e:3.5\
 "
 
    set list_ips_missing ""
@@ -211,7 +216,7 @@ proc create_root_design { parentCell } {
  ] $reset
 
   # Create instance: zynq_ultra_ps_e_0, and set properties
-  set zynq_ultra_ps_e_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.3 zynq_ultra_ps_e_0 ]
+  set zynq_ultra_ps_e_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 zynq_ultra_ps_e_0 ]
   set_property -dict [ list \
    CONFIG.CAN0_BOARD_INTERFACE {custom} \
    CONFIG.CAN1_BOARD_INTERFACE {custom} \

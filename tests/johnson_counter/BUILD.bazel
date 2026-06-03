@@ -1,0 +1,106 @@
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@rules_verilog//verilog:defs.bzl", "verilog_library")
+load(
+    "//vivado:defs.bzl",
+    "vivado_create_project",
+    "vivado_place_optimize",
+    "vivado_placement",
+    "vivado_routing",
+    "vivado_synthesis_optimize",
+    "vivado_synthesize",
+    "vivado_write_bitstream",
+)
+
+# Full synth → bitstream flow against a small counter design, composed
+# from the individual phase rules. Also exercises
+# `vivado_create_project` (open-in-GUI use case) sharing the same
+# source set.
+
+write_file(
+    name = "test_mem",
+    out = "test.mem",
+    content = [
+        "00",
+        "05",
+        "0A",
+        "0F",
+        "14",
+        "19",
+        "1E",
+        "28",
+        "",
+    ],
+    newline = "unix",
+    visibility = ["//tests:__subpackages__"],
+)
+
+verilog_library(
+    name = "johnson_counter",
+    srcs = ["johnson_counter.sv"],
+    data = ["test.mem"],
+    visibility = ["//tests:__subpackages__"],
+)
+
+verilog_library(
+    name = "johnson_counter_top",
+    srcs = ["johnson_counter_top.sv"],
+    data = [
+        "zcu111_gpio.tcl",
+        ":io_constraints.xdc",
+    ],
+    deps = [":johnson_counter"],
+)
+
+# `weights_replay_top` has the same `led[7:0]` port shape and reuses
+# these pin constraints — exported so `//tests/weights_replay` can pull
+# it via its `verilog_library`'s `data` attr.
+exports_files(
+    ["io_constraints.xdc"],
+    visibility = ["//tests:__subpackages__"],
+)
+
+vivado_synthesize(
+    name = "johnson_counter_synth",
+    module = ":johnson_counter_top",
+    module_top = "johnson_counter_top",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["requires-vivado"],
+)
+
+vivado_synthesis_optimize(
+    name = "johnson_counter_synth_opt",
+    checkpoint = ":johnson_counter_synth",
+    tags = ["requires-vivado"],
+)
+
+vivado_placement(
+    name = "johnson_counter_placement",
+    checkpoint = ":johnson_counter_synth_opt",
+    tags = ["requires-vivado"],
+)
+
+vivado_place_optimize(
+    name = "johnson_counter_place_opt",
+    checkpoint = ":johnson_counter_placement",
+    tags = ["requires-vivado"],
+)
+
+vivado_routing(
+    name = "johnson_counter_route",
+    checkpoint = ":johnson_counter_place_opt",
+    tags = ["requires-vivado"],
+)
+
+vivado_write_bitstream(
+    name = "johnson_counter_bitstream",
+    checkpoint = ":johnson_counter_route",
+    tags = ["requires-vivado"],
+)
+
+vivado_create_project(
+    name = "johnson_counter_project",
+    module = ":johnson_counter_top",
+    module_top = "johnson_counter_top",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    tags = ["requires-vivado"],
+)

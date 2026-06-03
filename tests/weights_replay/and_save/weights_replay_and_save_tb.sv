@@ -3,9 +3,12 @@
 */
 module weights_replay_and_save_tb;
 
+  // Fast clock so a full 100 + 100 posedge warm-up + comparison
+  // sequence completes inside xsim's default `run 1000ns` window.
+  // 4 ns period × 200 posedges = 800 ns, comfortably below 1 us.
   logic clk = 0;
   logic rst = 0;
-  realtime ClkPeriod = 100;
+  realtime ClkPeriod = 4;
 
   always #(ClkPeriod / 2) clk = ~clk;
   weights_replay_and_save_ip weights_replay_and_save_dut (

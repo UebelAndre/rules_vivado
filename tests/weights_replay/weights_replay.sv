@@ -11,15 +11,17 @@ module weights_replay #(
   logic [2:0] weights_address;
   logic [7:0] weights[1][8];
 
-`ifdef __VERILATOR__
-  initial begin
-    $readmemh("./tests/test.mem", weights);
-  end
-`else
-  initial begin
-    $readmemh("./test.mem", weights);
-  end
-`endif
+// Workspace-relative path — the xsim_test wrapper symlinks the
+// runfiles workspace tree into `WORK_DIR`, so xsim's CWD sees the
+// same layout the source tree has. The path points at the packaged
+// IP's `src/` dir (`vivado_create_ip` stages `.mem` data files
+// there) rather than the source location `//tests/johnson_counter:
+// test.mem`, because Vivado's `export_simulation -export_source_files`
+// only preserves HDL sources — data files ride along inside the IP
+// tree that gets staged into runfiles.
+initial begin
+    $readmemh("tests/weights_replay/weights_replay_ip/src/test.mem", weights);
+end
 
   always @(posedge clk) begin
     if (rst) begin

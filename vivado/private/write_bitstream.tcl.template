@@ -1,14 +1,43 @@
-set_param general.maxThreads {{THREADS}}
-open_checkpoint {{CHECKPOINT_IN}}
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+set BITSTREAM     {{BITSTREAM}}
+set WRITE_XSA     {{WRITE_XSA}}
+# Quoted so empty-string substitution (WRITE_XSA=0) parses as `set XSA_PATH ""`
+# rather than an unset-variable read.
+set XSA_PATH      "{{XSA_PATH}}"
 
-set WNS [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# `get_property SLACK` errors when there are no post-route timing paths (no
+# user clock constraints, or Versal-style all-PS routing). Probe first so
+# empty results roll into `$WNS = ""` which the guards below handle as
+# "unconstrained".
+set _paths [get_timing_paths -max_paths 1 -nworst 1 -setup]
+if {[llength $_paths] > 0} {
+    set WNS [get_property SLACK $_paths]
+} else {
+    set WNS ""
+}
 puts "Post Route WNS = $WNS"
 
-if {$WNS >= 0} {
-    write_bitstream -force {{BITSTREAM}}
-    if {{{WRITE_XSA}}} {
-        write_hw_platform -fixed -include_bit -force -file {{XSA_PATH}}
-    }
-} else {
-    puts "Failed to make timing, refusing to make bitstream"
+# `error` (not `puts`) so Bazel surfaces a timing fail as a real action
+# failure, not "expected output not created".
+if {$WNS ne "" && $WNS < 0} {
+    error "Post-route timing not met (WNS = $WNS). Refusing to make bitstream."
 }
+if {$WNS eq ""} {
+    puts "WARNING: No post-route timing paths found. Writing bitstream without timing validation."
+}
+
+write_bitstream -force $BITSTREAM
+if {$WRITE_XSA} {
+    write_hw_platform -fixed -include_bit -force -file $XSA_PATH
+}
+
+foreach hook $POST_HOOKS { source $hook }

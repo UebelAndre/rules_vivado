@@ -1,0 +1,45 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_verilog//verilog:defs.bzl", "verilog_library")
+load("//vivado:defs.bzl", "vivado_export_simulation")
+
+# Executable-hook demo. Wires all four hook slots on a single
+# `vivado_export_simulation` target:
+#   pre_hooks       — .tcl sourced INSIDE Vivado, before the export
+#   pre_hook_tools  — executable subprocess BEFORE Vivado starts
+#   post_hooks      — .tcl sourced INSIDE Vivado, after the export
+#   post_hook_tools — executable subprocess AFTER Vivado exits
+#
+# `rust_binary` was picked over `sh_binary` / `cc_binary` because
+# rules_rust ships a hermetic rustc that binds without a cc_toolchain
+# — the hook demo builds cleanly on RBE without dragging in the
+# default cpp-toolchain autodetection quirks.
+
+rust_binary(
+    name = "pre_hook_tool",
+    srcs = ["src/pre_hook.rs"],
+    edition = "2021",
+)
+
+rust_binary(
+    name = "post_hook_tool",
+    srcs = ["src/post_hook.rs"],
+    edition = "2021",
+)
+
+verilog_library(
+    name = "tb",
+    srcs = ["tb.sv"],
+)
+
+vivado_export_simulation(
+    name = "hooks_export",
+    module = ":tb",
+    module_top = "tb",
+    part_number = "xczu28dr-ffvg1517-2-e",
+    post_hook_tools = [":post_hook_tool"],
+    post_hooks = ["post_hook.tcl"],
+    pre_hook_tools = [":pre_hook_tool"],
+    pre_hooks = ["pre_hook.tcl"],
+    simulator = "xsim",
+    tags = ["requires-vivado"],
+)

@@ -1,0 +1,42 @@
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+set DEVICE_IMAGE  {{DEVICE_IMAGE}}
+set WRITE_XSA     {{WRITE_XSA}}
+# Quoted so empty-string substitution (WRITE_XSA=0) parses as `set XSA_PATH ""`
+# rather than an unset-variable read.
+set XSA_PATH      "{{XSA_PATH}}"
+# `{*}`-expanded AFTER `-force` and BEFORE the rule's `$DEVICE_IMAGE`
+# positional; `validate_args` rejects `-force` and `-file` so callers can't
+# override rule-declared overwrite policy or output path.
+set WRITE_ARGS    {{WRITE_ARGS}}
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# `get_property SLACK` errors when there are zero timing paths; probe first.
+set _paths [get_timing_paths -max_paths 1 -nworst 1 -setup]
+if {[llength $_paths] > 0} {
+    set WNS [get_property SLACK $_paths]
+} else {
+    set WNS ""
+}
+puts "Post Route WNS = $WNS"
+
+if {$WNS ne "" && $WNS < 0} {
+    error "Post-route timing not met (WNS = $WNS). Refusing to write device image."
+}
+if {$WNS eq ""} {
+    puts "WARNING: No post-route timing paths found. Writing device image without timing validation."
+}
+
+write_device_image -force {*}$WRITE_ARGS $DEVICE_IMAGE
+if {$WRITE_XSA} {
+    write_hw_platform -fixed -include_bit -force -file $XSA_PATH
+}
+
+foreach hook $POST_HOOKS { source $hook }

@@ -30,13 +30,6 @@ registered [`vivado_toolchain`](./toolchains.md).
 - [`vivado_write_bitstream`](./vivado_bitstream.md) — emit the final
   `.bit` (and optionally `.xsa`) from a routing checkpoint.
 
-## End-to-end flow
-
-- `vivado_flow` — convenience macro (loaded from
-  `@rules_vivado//vivado:defs.bzl`) that chains synthesis → opt →
-  placement → place-opt → routing → bitstream into one target name.
-  See the [Quick start](./index.md#quick-start) for a worked example.
-
 ## IP packaging
 
 - [`vivado_create_ip`](./vivado_ip.md) — package an HDL module as a

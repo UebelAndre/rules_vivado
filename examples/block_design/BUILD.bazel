@@ -1,0 +1,15 @@
+load("@rules_vivado//vivado:defs.bzl", "vivado_block_design")
+
+# vivado_block_design — evaluate a Tcl script under `create_bd_design`
+# and stage the resulting `.bd` tree as a TreeArtifact.
+#
+# The Tcl script IS the source of truth; the rule doesn't try to
+# generate BDs from HDL. Downstream projects consume the BD via their
+# `block_designs` attr, and `module_top` must match the
+# `create_bd_design <name>` argument in the Tcl body.
+vivado_block_design(
+    name = "loopback_bd",
+    src = "loopback_bd.tcl",
+    module_top = "loopback",
+    part_number = "xc7a35ticsg324-1L",
+)
