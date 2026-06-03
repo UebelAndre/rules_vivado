@@ -10,58 +10,61 @@ load(
 load(
     "//vivado/private:common.bzl",
     "TOOLCHAIN_TYPE",
-    "generate_encrypt_tcl",
-    "generate_file_load_tcl",
-    "generate_ip_block_tcl",
+    "encrypt_data",
+    "file_list",
+    "get_vivado_toolchain",
+    "hdl_sources_data",
+    "ip_blocks_data",
     "run_tcl_template",
 )
 
 def _vivado_create_ip_impl(ctx):
-    all_files, hdl_source_content, constraints_content, tcl_content = generate_file_load_tcl(ctx.attr.module)
+    hdl = hdl_sources_data(ctx.attr.module)
+    ip = ip_blocks_data(ctx.attr.ip_blocks)
 
     xci_name = ctx.label.name
     ip_dir = ctx.actions.declare_directory(ctx.label.name)
-    ip_block_tcl = generate_ip_block_tcl(ctx.attr.ip_blocks)
 
     outputs = [ip_dir]
 
     post_processing_command = ""
-    encrypt_content = ""
-    ip_src_dir = "{}/src/".format(ip_dir.path)
     if ctx.attr.encrypt:
-        encrypt_content, encrypted_files, post_processing_command = generate_encrypt_tcl(
+        enc = encrypt_data(
             ctx = ctx,
-            all_files = all_files,
-            keyfile_path = ctx.file.keyfile.path,
-            ip_dir_src = ip_src_dir,
+            all_files = hdl.all_files,
+            ip_dir_src = "{}/src/".format(ip_dir.path),
         )
-        outputs += encrypted_files
+        encrypt_files_literal = enc.encrypt_files
+        outputs += enc.encrypted_outputs
+        post_processing_command = enc.post_processing_command
+    else:
+        encrypt_files_literal = "{}"
 
     substitutions = {
-        "{{CONSTRAINTS_CONTENT}}": constraints_content,
-        "{{ENCRYPT_CONTENT}}": encrypt_content,
-        "{{HDL_SOURCE_CONTENT}}": hdl_source_content,
-        "{{IP_BLOCK_TCL}}": ip_block_tcl,
+        "{{ENCRYPT_FILES}}": encrypt_files_literal,
+        "{{ENCRYPT_KEYFILE}}": ctx.file.keyfile.path,
+        "{{HDL_SOURCES}}": hdl.hdl_sources,
+        "{{IP_CONFIGURED_INSTANCES}}": ip.ip_configured_instances,
+        "{{IP_INSTANCES}}": ip.ip_instances,
         "{{IP_LIBRARY}}": ctx.attr.ip_library,
         "{{IP_OUTPUT_DIR}}": ip_dir.path,
+        "{{IP_REPOS}}": ip.ip_repos,
         "{{IP_VENDOR}}": ctx.attr.ip_vendor,
         "{{IP_VERSION}}": ctx.attr.ip_version,
         "{{JOBS}}": "{}".format(ctx.attr.jobs),
         "{{MODULE_TOP}}": ctx.attr.module_top,
         "{{PART_NUMBER}}": ctx.attr.part_number,
         "{{PROJECT_DIR}}": "./",
-        "{{TCL_CONTENT}}": tcl_content,
+        "{{TCL_FILES}}": hdl.tcl_files,
         "{{XCI_NAME}}": xci_name,
+        "{{XDC_FILES}}": hdl.xdc_files,
     }
 
-    ip_block_dirs = []
-    for ip_block in ctx.attr.ip_blocks:
-        ip_block_dirs += ip_block[VivadoIPBlockInfo].repo
-    ip_block_outputs = run_tcl_template(
+    result = run_tcl_template(
         ctx = ctx,
         template = ctx.file.create_ip_block_template,
         substitutions = substitutions,
-        input_files = all_files + [ctx.file.keyfile] + ip_block_dirs,
+        input_files = hdl.all_files + [ctx.file.keyfile] + ip.input_files,
         output_files = outputs,
         mnemonic = "VivadoCreateIp",
         jobs = ctx.attr.jobs,
@@ -69,14 +72,24 @@ def _vivado_create_ip_impl(ctx):
     )
 
     return [
-        ip_block_outputs[0],
+        DefaultInfo(files = depset(result.outputs)),
         VivadoIPBlockInfo(
-            is_interface = False,
-            repo = [ip_dir] + ip_block_dirs,
-            vendor = ctx.attr.ip_vendor,
-            library = ctx.attr.ip_library,
-            version = ctx.attr.ip_version,
-            module_top = ctx.attr.module_top,
+            repo = [ip_dir] + ip.input_files,
+            configured_instance = None,
+            instantiable = struct(
+                vendor = ctx.attr.ip_vendor,
+                library = ctx.attr.ip_library,
+                name = ctx.attr.module_top,
+                version = ctx.attr.ip_version,
+                # Convention preserved from the previous helper: the
+                # consumer's create_ip call names the instance
+                # `<module_top>_ip` to disambiguate from the IP name.
+                module_name = ctx.attr.module_top + "_ip",
+            ),
+        ),
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["module", "ip_blocks"],
         ),
     ]
 
@@ -155,6 +168,7 @@ def _vivado_interface_definition_impl(ctx):
     sv_file = ctx.file.src
     parser = ctx.executable.parser
     generator = ctx.executable._generator
+    toolchain_env = get_vivado_toolchain(ctx).env
 
     signals_json = ctx.actions.declare_file("{}_signals.json".format(name))
     ctx.actions.run(
@@ -165,6 +179,7 @@ def _vivado_interface_definition_impl(ctx):
         mnemonic = "VivadoParseInterface",
         progress_message = "Parsing SV interface %{label}",
         toolchain = TOOLCHAIN_TYPE,
+        env = toolchain_env,
     )
 
     bus_def_file = ctx.actions.declare_file("{}.xml".format(name))
@@ -219,6 +234,7 @@ def _vivado_interface_definition_impl(ctx):
         mnemonic = "VivadoGenInterfaceXml",
         progress_message = "Generating IP-XACT XML %{label}",
         toolchain = TOOLCHAIN_TYPE,
+        env = toolchain_env,
     )
 
     outputs = [bus_def_file, abs_def_file, setup_tcl_file]
@@ -321,30 +337,15 @@ def _vivado_create_interface_ip_impl(ctx):
 
     ip_dir = ctx.actions.declare_directory(ctx.label.name)
 
-    display_name = interface_info.name.replace("_", " ").title() + " Interface"
-    description = ctx.attr.description if ctx.attr.description else display_name
-    vendor_display_name = ctx.attr.vendor_display_name if ctx.attr.vendor_display_name else interface_info.vendor
-
-    hdl_source_content = ""
     all_files = []
     if ctx.attr.module:
-        all_files, hdl_source_content, _, _ = generate_file_load_tcl(ctx.attr.module)
+        hdl = hdl_sources_data(ctx.attr.module)
+        all_files = hdl.all_files
 
     substitutions = {
-        "{{ABSTRACTION_DEFINITION_BASENAME}}": interface_info.abstraction_definition.basename,
         "{{ABSTRACTION_DEFINITION_FILE}}": interface_info.abstraction_definition.path,
-        "{{BUS_DEFINITION_BASENAME}}": interface_info.bus_definition.basename,
         "{{BUS_DEFINITION_FILE}}": interface_info.bus_definition.path,
-        "{{DESCRIPTION}}": description,
-        "{{DISPLAY_NAME}}": display_name,
-        "{{HDL_SOURCE_CONTENT}}": hdl_source_content,
-        "{{INTERFACE_NAME}}": interface_info.name,
-        "{{IP_LIBRARY}}": interface_info.library,
         "{{IP_OUTPUT_DIR}}": ip_dir.path,
-        "{{IP_VENDOR}}": interface_info.vendor,
-        "{{IP_VERSION}}": interface_info.version,
-        "{{PART_NUMBER}}": ctx.attr.part_number,
-        "{{VENDOR_DISPLAY_NAME}}": vendor_display_name,
     }
 
     input_files = [
@@ -352,26 +353,31 @@ def _vivado_create_interface_ip_impl(ctx):
         interface_info.abstraction_definition,
     ] + all_files
 
-    outputs = [ip_dir]
-
-    default_info = run_tcl_template(
+    result = run_tcl_template(
         ctx = ctx,
         template = ctx.file.create_interface_ip_template,
         substitutions = substitutions,
         input_files = input_files,
-        output_files = outputs,
+        output_files = [ip_dir],
         mnemonic = "VivadoCreateInterfaceIp",
     )
 
     return [
-        default_info[0],
+        DefaultInfo(files = depset(result.outputs)),
         VivadoIPBlockInfo(
-            is_interface = True,
             repo = [ip_dir],
-            vendor = interface_info.vendor,
-            library = interface_info.library,
-            version = interface_info.version,
-            module_top = interface_info.name,
+            # Interface definitions live in `repo` and are referenced by
+            # name from other IPs / BDs — not instantiated via create_ip,
+            # not added as a source. Repo-only.
+            configured_instance = None,
+            instantiable = None,
+        ),
+        # Propagate coverage instrumentation from the optional wrapped
+        # module so a downstream test walking through this IP reaches
+        # the underlying `verilog_library`/`vhdl_library` sources.
+        coverage_common.instrumented_files_info(
+            ctx,
+            dependency_attributes = ["module"],
         ),
     ]
 
@@ -384,10 +390,6 @@ vivado_create_interface_ip = rule(
             doc = "The TCL template for creating interface IP.",
             default = Label("//vivado/private:create_interface_ip.tcl.template"),
             allow_single_file = [".template"],
-        ),
-        "description": attr.string(
-            doc = "Description for the IP block.",
-            default = "",
         ),
         "interface": attr.label(
             doc = "The interface definition to package.",
@@ -402,9 +404,135 @@ vivado_create_interface_ip = rule(
             doc = "The targeted xilinx part.",
             mandatory = True,
         ),
-        "vendor_display_name": attr.string(
-            doc = "Display name for the vendor.",
-            default = "",
+    },
+    provides = [
+        DefaultInfo,
+        VivadoIPBlockInfo,
+    ],
+)
+
+def _vivado_xci_impl(ctx):
+    ip_dir = ctx.actions.declare_directory(ctx.label.name)
+
+    pre_hooks_list, pre_hook_files = file_list(ctx.attr.pre_hooks)
+    post_hooks_list, post_hook_files = file_list(ctx.attr.post_hooks)
+    ip = ip_blocks_data(ctx.attr.ip_blocks)
+
+    substitutions = {
+        "{{IP_CONFIGURED_INSTANCES}}": ip.ip_configured_instances,
+        "{{IP_DIR}}": ip_dir.path,
+        "{{IP_INSTANCES}}": ip.ip_instances,
+        "{{IP_REPOS}}": ip.ip_repos,
+        "{{IP_SRC}}": ctx.file.src.path,
+        "{{MODULE_TOP}}": ctx.attr.module_top,
+        "{{PART_NUMBER}}": ctx.attr.part_number,
+        "{{POST_HOOKS}}": post_hooks_list,
+        "{{PRE_HOOKS}}": pre_hooks_list,
+    }
+
+    result = run_tcl_template(
+        ctx = ctx,
+        template = ctx.file.xci_template,
+        substitutions = substitutions,
+        input_files = (
+            [ctx.file.src] + ip.input_files +
+            pre_hook_files + post_hook_files +
+            ctx.files.data
+        ),
+        output_files = [ip_dir],
+        mnemonic = "VivadoXci",
+        jobs = ctx.attr.jobs,
+    )
+
+    return [
+        DefaultInfo(files = depset(result.outputs)),
+        VivadoIPBlockInfo(
+            repo = [ip_dir] + ip.input_files,
+            # The .xci that was just generated lives at the top of `ip_dir`
+            # (per the create_xci.tcl.template's flat copy of the source
+            # IP tree). Consumers `add_files` it to bring the configured
+            # instance into their project.
+            configured_instance = struct(
+                repo_dir = ip_dir,
+                xci_relpath = ctx.attr.module_top + ".xci",
+                module_top = ctx.attr.module_top,
+            ),
+            # The IP is already configured inside the .xci; consumers must
+            # NOT call create_ip on it.
+            instantiable = None,
+        ),
+    ]
+
+vivado_xci = rule(
+    doc = """Package a Xilinx-catalog IP from a configuration TCL into a \
+consumable IP repo.
+
+The `src` TCL is sourced inside a fresh Vivado project; it must call
+`create_ip -name <ip> -vendor xilinx.com -library ip -version <ver> \\
+    -module_name <module_top> -dir . -force` and (optionally) configure
+the IP via `set_property -dict {...} [get_ips <module_top>]`. The
+resulting `.xci` plus generated HDL/sim files are captured into a
+TreeArtifact directory and exposed via `VivadoIPBlockInfo` so the IP
+repo is auto-added to the consumer's `ip_repo_paths`.
+
+Use the `ip_blocks` attribute on `vivado_synthesize`, `vivado_create_project`,
+`vivado_block_design`, or `vivado_create_ip` to make this IP available to
+that consumer. BD cells that reference the IP's VLNV (e.g.
+`create_bd_cell -vlnv xilinx.com:ip:axi_dma:7.1`) will then resolve via
+the catalog.
+
+For your own HDL packaged as a new reusable IP, use `vivado_create_ip`
+instead.
+""",
+    implementation = _vivado_xci_impl,
+    toolchains = [TOOLCHAIN_TYPE],
+    attrs = {
+        "data": attr.label_list(
+            doc = ("Additional files the IP-config TCL needs available in " +
+                   "the action's sandbox. Each file is materialized at its " +
+                   "workspace-relative path; the TCL can reference it via " +
+                   "that path (e.g., to `exec patch -i ...` against the " +
+                   "generated HDL, or to `read` a side data file). Same " +
+                   "semantics as `cc_library.data`, `py_test.data`, etc."),
+            allow_files = True,
+            default = [],
+        ),
+        "ip_blocks": attr.label_list(
+            doc = "Other IP blocks the configuration TCL depends on (rare; mostly empty).",
+            providers = [VivadoIPBlockInfo],
+            default = [],
+        ),
+        "jobs": attr.int(
+            doc = "Jobs to pass to vivado (resource hint to Bazel's scheduler).",
+            default = 1,
+        ),
+        "module_top": attr.string(
+            doc = "The `module_name` passed to `create_ip` in `src`. Used to locate the produced `.xci`.",
+            mandatory = True,
+        ),
+        "part_number": attr.string(
+            doc = "Xilinx part number the IP is configured for.",
+            mandatory = True,
+        ),
+        "post_hooks": attr.label_list(
+            doc = "TCL files sourced after `generate_target`, before the project closes. Sourced in list order.",
+            allow_files = [".tcl", ".xdc", ".sdc"],
+            default = [],
+        ),
+        "pre_hooks": attr.label_list(
+            doc = "TCL files sourced after project + IP-block setup, before sourcing the user IP TCL. Sourced in list order.",
+            allow_files = [".tcl", ".xdc", ".sdc"],
+            default = [],
+        ),
+        "src": attr.label(
+            doc = "TCL script that calls `create_ip ... -module_name <module_top>` and (optionally) sets properties.",
+            mandatory = True,
+            allow_single_file = [".tcl"],
+        ),
+        "xci_template": attr.label(
+            doc = "The XCI tcl template.",
+            default = Label("//vivado/private:create_xci.tcl.template"),
+            allow_single_file = [".template"],
         ),
     },
     provides = [

@@ -1,0 +1,50 @@
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_write_device_image_impl`. WRITE_XSA is a 0/1 flag; XSA_PATH is
+# always set (the rule substitutes a placeholder when WRITE_XSA is 0).
+# ============================================================================
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+set DEVICE_IMAGE  {{DEVICE_IMAGE}}
+set WRITE_XSA     {{WRITE_XSA}}
+set XSA_PATH      {{XSA_PATH}}
+# Flag list passed through to `write_device_image` from the rule's
+# `write_args` attr; see the attr docstring for the contract. Rendered
+# as a Tcl word list (`{}` when empty); `{*}`-expanded into the
+# command below, AFTER the rule-controlled `-force` and BEFORE the
+# rule's `$DEVICE_IMAGE` positional output. `validate_args` rejects
+# `-force` and `-file` so callers can't override the rule's
+# overwrite-policy or rule-declared output path.
+set WRITE_ARGS    {{WRITE_ARGS}}
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+set WNS [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
+puts "Post Route WNS = $WNS"
+
+# Negative slack → fail loud. Empty slack (no timing paths) → likely a
+# PS-only or unconstrained design; emit a warning and proceed.
+if {$WNS ne "" && $WNS < 0} {
+    error "Post-route timing not met (WNS = $WNS). Refusing to write device image."
+}
+if {$WNS eq ""} {
+    puts "WARNING: No post-route timing paths found. Writing device image without timing validation."
+}
+
+# Versal-architecture write. Produces a `.pdi` (Programmable Device Image)
+# which the consumer can hand to bootgen / `xbutil` / etc.
+write_device_image -force {*}$WRITE_ARGS $DEVICE_IMAGE
+if {$WRITE_XSA} {
+    write_hw_platform -fixed -include_bit -force -file $XSA_PATH
+}
+
+foreach hook $POST_HOOKS { source $hook }

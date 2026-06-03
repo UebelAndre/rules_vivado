@@ -1,7 +1,39 @@
-set_param general.maxThreads {{THREADS}}
-open_checkpoint {{CHECKPOINT_IN}}
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_place_optimize_impl`. Everything below is plain Tcl that iterates
+# over the substituted data with static foreach / dict commands.
+# ============================================================================
+set THREADS        {{THREADS}}
+set CHECKPOINT_IN  {{CHECKPOINT_IN}}
+set CHECKPOINT_OUT {{CHECKPOINT_OUT}}
+# Flag list passed through to `phys_opt_design` from the rule's
+# `phys_opt_args` attr; see the attr docstring for the contract.
+# Rendered as a Tcl word list (`{}` when empty); `{*}`-expanded into
+# the command below. No rule-controlled flags.
+set PHYS_OPT_ARGS  {{PHYS_OPT_ARGS}}
 
-phys_opt_design -directive {{PHYS_OPT_DIRECTIVE}}
-report_timing_summary -file {{TIMING_REPORT}}
-report_utilization -file {{UTIL_REPORT}}
-write_checkpoint -force {{CHECKPOINT_OUT}}
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+set REPORT_COMMANDS    {{REPORT_COMMANDS}}
+set REQUESTED_REPORTS  {{REQUESTED_REPORTS}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+phys_opt_design {*}$PHYS_OPT_ARGS
+
+foreach hook $POST_HOOKS { source $hook }
+
+foreach entry $REQUESTED_REPORTS {
+    lassign $entry type out_file
+    set cmd [string map [list "{OUT}" $out_file] [dict get $REPORT_COMMANDS $type]]
+    catch [list uplevel #0 $cmd]
+}
+
+write_checkpoint -force $CHECKPOINT_OUT

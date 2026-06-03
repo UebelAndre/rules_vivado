@@ -1,0 +1,103 @@
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_block_design_impl`. Everything below is plain Tcl that iterates
+# over the substituted data with static foreach / if commands.
+# ============================================================================
+set BD_DIR      {{BD_DIR}}
+set PART_NUMBER {{PART_NUMBER}}
+set MODULE_TOP  {{MODULE_TOP}}
+set BD_SRC      {{BD_SRC}}
+
+# IP blocks the user's BD TCL depends on.
+set IP_REPOS                {{IP_REPOS}}
+set IP_CONFIGURED_INSTANCES {{IP_CONFIGURED_INSTANCES}}
+set IP_INSTANCES            {{IP_INSTANCES}}
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+# Create a Vivado project just to host a block design, source the user's BD
+# TCL (which must call `create_bd_design` and `save_bd_design`), generate the
+# BD's synth/sim products, and normalize the resulting `.bd` path so consumers
+# can find it at `<bd_dir>/<module_top>.bd`.
+create_project bd_project $BD_DIR/project -part $PART_NUMBER
+
+if {[llength $IP_REPOS] > 0} {
+    set_property ip_repo_paths $IP_REPOS [current_project]
+    update_ip_catalog
+}
+
+# A BD-host project rarely needs configured XCIs or fresh `create_ip` calls,
+# but the loops are here for symmetry / future use.
+foreach ci $IP_CONFIGURED_INSTANCES {
+    lassign $ci ci_module_top ci_repo ci_xci_relpath
+    set _xci_import_dir [file join $BD_DIR ${ci_module_top}_imported_xci]
+    file mkdir $_xci_import_dir
+    foreach _item [glob -nocomplain -directory $ci_repo *] {
+        file copy -force $_item $_xci_import_dir/
+    }
+    exec chmod -R u+rwX $_xci_import_dir
+    add_files -fileset sources_1 [file join $_xci_import_dir $ci_xci_relpath]
+}
+
+foreach inst $IP_INSTANCES {
+    lassign $inst inst_name inst_vendor inst_library inst_version inst_module_name
+    create_ip -name $inst_name -vendor $inst_vendor -library $inst_library \
+        -version $inst_version -module_name $inst_module_name
+}
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# The user's BD TCL — must call `create_bd_design $MODULE_TOP` and end
+# with `save_bd_design` (or `regenerate_bd_layout` then `save_bd_design`).
+source $BD_SRC
+
+# Locate the BD that was just created. Fail loudly if MODULE_TOP doesn't match
+# the name passed to create_bd_design.
+set bd_files [get_files -quiet "${MODULE_TOP}.bd"]
+if {[llength $bd_files] == 0} {
+    error "Block design '$MODULE_TOP' was not created by $BD_SRC. Check that the TCL calls `create_bd_design \"$MODULE_TOP\"`."
+}
+set bd_file [lindex $bd_files 0]
+set bd_src_dir [file dirname $bd_file]
+
+# Generate synthesis/simulation products for the BD. `synth_checkpoint_mode
+# NONE` + targeted `{synthesis implementation}` matches the IP pre-generation
+# flow used elsewhere in this ruleset — `all` additionally emits simulation
+# artifacts (BFMs, encrypted monitor models) that pollute the downstream
+# synth source set.
+set_property synth_checkpoint_mode NONE $bd_file
+generate_target {synthesis implementation} $bd_file
+
+# Copy the entire BD source tree to BD_DIR so consumers get the BD
+# definition itself plus its statically-declared sub-IP `.xci` files
+# (the `<bd_src_dir>/ip/` tree).
+foreach item [glob -nocomplain -directory $bd_src_dir *] {
+    file copy -force $item $BD_DIR/
+}
+
+# Also copy the generated outputs from the project's gen dir so
+# consumers find the sub-IP synth wrappers (`<bd_dir>/ip/<sub_ip>/
+# synth/<sub_ip>.v`) alongside the source tree. Without this, the
+# downstream `synth_design` call elaborates the BD wrapper but fails
+# with `[Synth 8-439] module '<bd>_<sub_ip>_0' not found` because the
+# wrapper modules live in the gen dir, not the source dir. Vivado's
+# default layout for `generate_target` is `<proj>.gen/sources_1/bd/
+# <module_top>/...`; the project dir lives at `$BD_DIR/project` (see
+# `create_project` above), so the gen tree for this BD is at
+# `$BD_DIR/project/bd_project.gen/sources_1/bd/$MODULE_TOP/`. Rules that
+# generate IPs at their final on-disk location skip this `merge gen back
+# into src` step because the src and gen trees already coincide there.
+set _bd_gen_dir [file join $BD_DIR project bd_project.gen sources_1 bd $MODULE_TOP]
+if {[file isdirectory $_bd_gen_dir]} {
+    foreach item [glob -nocomplain -directory $_bd_gen_dir *] {
+        file copy -force $item $BD_DIR/
+    }
+}
+
+foreach hook $POST_HOOKS { source $hook }
+
+close_project

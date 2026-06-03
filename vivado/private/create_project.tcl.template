@@ -1,59 +1,369 @@
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_create_project_impl` / `_vivado_synthesize_impl`. Everything below
+# is plain Tcl that iterates over the substituted data with static foreach /
+# switch / if commands. WITH_SYNTH is a 0/1 flag; SYNTH_CHECKPOINT and
+# SYNTH_STRATEGY are only consumed inside the `if {$WITH_SYNTH}` guard.
+# ============================================================================
+set PROJECT_DIR      "{{PROJECT_DIR}}"
+set PART_NUMBER      {{PART_NUMBER}}
+set MODULE_TOP       {{MODULE_TOP}}
+set WITH_SYNTH       {{WITH_SYNTH}}
+set JOBS             {{JOBS}}
+set SYNTH_STRATEGY   "{{SYNTH_STRATEGY}}"
+set SYNTH_CHECKPOINT "{{SYNTH_CHECKPOINT}}"
+# How Vivado stores project state. `project` creates a named on-disk
+# project at $PROJECT_DIR — Vivado's managed-run infrastructure
+# (`launch_runs`, `synth_1`) is available. `in_memory` calls
+# `create_project -in_memory` — no on-disk project, no managed runs.
+# The two modes can produce different netlist hierarchies for IPs
+# nested inside block designs (project mode auto-crawls the project
+# gen dir for sub-IP sources; in_memory mode requires explicit
+# `read_ip`/`read_bd` + sub-IP source registration).
+set PROJECT_MODE     "{{PROJECT_MODE}}"
+# Path of the implementation-only XDC bundle to write after synth, or
+# empty when the rule doesn't request capture. See the post-synth block
+# below for what gets bundled and why.
+set IMPL_XDC_BUNDLE  "{{IMPL_XDC_BUNDLE}}"
+# How `synth_design` runs: `launch_runs` wraps it in a managed
+# `synth_1` design-run (spawns a fresh Vivado process to execute);
+# `synth_design` invokes it directly in this Vivado process. Multi-
+# config XCI consumer instantiations require `synth_design` — the
+# managed-run path re-binds IPs through the IP's synth wrapper at
+# re-load time, which doesn't accept consumer-side generics.
+set SYNTH_INVOCATION "{{SYNTH_INVOCATION}}"
+# Flag list passed through to `synth_design` from the rule's
+# `synth_args` attr; see the attr docstring for the contract. Rendered
+# as a Tcl word list (`{}` when empty); `{*}`-expanded into the
+# `synth_design` command below, BEFORE the rule-controlled
+# `-top $MODULE_TOP` so the rule's value wins on Vivado's last-wins
+# flag parsing (defence in depth — `validate_args` also rejects
+# `-top` in the rule impl). Only consulted on the `synth_design`
+# invocation path; the `launch_runs` path threads its flags through
+# `STEPS.SYNTH_DESIGN.ARGS.*` properties instead.
+set SYNTH_ARGS       {{SYNTH_ARGS}}
 
-create_project project_1 {{PROJECT_DIR}} -part {{PART_NUMBER}}
+# HDL sources: list of {kind path library standard} tuples.
+#   kind ∈ {verilog, systemverilog, vhdl, import}; library/standard only
+#   meaningful for vhdl.
+set HDL_SOURCES {{HDL_SOURCES}}
+# Constraints: list of .xdc paths.
+set XDC_FILES   {{XDC_FILES}}
+# Additional Tcl files: list of .tcl paths to `source`.
+set TCL_FILES   {{TCL_FILES}}
 
-set_property verilog_define __SYNTHESIS__ [current_fileset]
+# IP blocks. IP_REPOS: list of repo dir paths added to `ip_repo_paths`.
+#   IP_CONFIGURED_INSTANCES: {module_top repo xci_relpath} tuples for IPs that
+#   ship a pre-configured `.xci` to add as a source.
+#   IP_INSTANCES: {name vendor library version module_name} tuples for IPs the
+#   project should `create_ip` fresh from the catalog.
+set IP_REPOS                {{IP_REPOS}}
+set IP_CONFIGURED_INSTANCES {{IP_CONFIGURED_INSTANCES}}
+set IP_INSTANCES            {{IP_INSTANCES}}
 
-{{HDL_SOURCE_CONTENT}}
+# Block designs: list of {module_top bd_dir} tuples to fold into the project.
+set BLOCK_DESIGNS {{BLOCK_DESIGNS}}
 
-{{IP_BLOCK_TCL}}
+# Hook scripts to `source`.
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
 
-{{TCL_CONTENT}}
+# Reports requested by the rule's `reports` attr.
+set REPORT_COMMANDS    {{REPORT_COMMANDS}}
+set REQUESTED_REPORTS  {{REQUESTED_REPORTS}}
 
-{{CONSTRAINTS_CONTENT}}
-
-
-set_property top {{MODULE_TOP}} [current_fileset]
-
-if {{{WITH_SYNTH}}} {
-    # Generate all board design files.
-    foreach bd [get_files -quiet "*.bd"] {
-    if {![get_property IS_GENERATED $bd]} {
-        generate_target all $bd
-        create_ip_run $bd
+# ============================================================================
+# Script body
+# ============================================================================
+switch -- $PROJECT_MODE {
+    "project" {
+        create_project project_1 $PROJECT_DIR -part $PART_NUMBER
     }
+    "in_memory" {
+        create_project -in_memory -part $PART_NUMBER
+        set_property design_mode RTL [current_fileset]
     }
-
-    # Synth all IP. This has to be done in project mode.
-    set run_synth [get_runs "synth_1"]
-    set run_list [get_runs -quiet \
-                -filter "IS_SYNTHESIS == true && NAME != $run_synth"]
-
-    if {[llength $run_list] != 0} {
-    foreach run $run_list {
-        reset_run $run
+    default {
+        error "create_project.tcl.template: unknown PROJECT_MODE '$PROJECT_MODE' (expected project or in_memory)"
     }
-    launch_runs $run_list -jobs {{JOBS}}
-    foreach run $run_list {
-        wait_on_run $run
-        if {[get_property PROGRESS $run] != "100%"} {
-            puts "ERROR: OOC Synthesis of ${run} failed"
-            exit 2
+}
+# Let Vivado infer compile order from the source set rather than relying
+# on the file-add order. Hierarchical block designs and multi-config IP
+# wrappers can fail with the default `DisplayOnly` mode where Vivado
+# expects the file-add order to be correct. `All` matches the project-
+# wizard default and is the safer choice for IP-heavy designs.
+set_property source_mgmt_mode All [current_project]
+
+# --- Load HDL sources ---
+foreach entry $HDL_SOURCES {
+    lassign $entry kind path library standard
+    switch -- $kind {
+        verilog       { read_verilog -library $library $path }
+        systemverilog { read_verilog -library $library -sv $path }
+        vhdl {
+            switch -- $standard {
+                2008    { read_vhdl -vhdl2008 -library $library $path }
+                2019    { read_vhdl -vhdl2019 -library $library $path }
+                default { read_vhdl           -library $library $path }
+            }
+        }
+        import        { import_files $path }
+    }
+}
+
+# --- IP blocks: repos + instances ---
+if {[llength $IP_REPOS] > 0} {
+    set_property ip_repo_paths $IP_REPOS [current_project]
+    update_ip_catalog
+}
+
+# Configured instances: copy each repo into a writable project-local
+# location (Bazel inputs are read-only sandbox mounts; Vivado needs to
+# mutate IP runs) and bring the `.xci` into the design. In named-project
+# mode `add_files` is the right verb (the file becomes part of
+# sources_1; Vivado auto-tracks generated sub-IP outputs). In
+# `in_memory` mode there is no project to add to — `read_ip` is the
+# non-project equivalent that imports the IP and tracks its source set
+# so `synth_design` can find its modules.
+foreach ci $IP_CONFIGURED_INSTANCES {
+    lassign $ci ci_module_top ci_repo ci_xci_relpath
+    set _xci_parent [expr {$PROJECT_MODE eq "project" ? [file dirname $PROJECT_DIR] : "."}]
+    set _xci_root [expr {$PROJECT_MODE eq "project" ? [file tail $PROJECT_DIR] : "in_memory"}]
+    set _xci_import_dir [file join $_xci_parent "${_xci_root}_imported_xcis" $ci_module_top]
+    file mkdir $_xci_import_dir
+    foreach _item [glob -nocomplain -directory $ci_repo *] {
+        file copy -force $_item $_xci_import_dir/
+    }
+    exec chmod -R u+rwX $_xci_import_dir
+    set _xci_path [file join $_xci_import_dir $ci_xci_relpath]
+    # `add_files` works in BOTH project and in_memory modes. The
+    # in_memory path uses `add_files` (not `read_ip`) so that
+    # Vivado's project-wide source tracking pulls in the IP's generated
+    # sub-IP outputs through `get_files`. Using `read_ip` in
+    # in_memory mode dropped sub-IP source visibility and caused
+    # `[Synth 8-439] module '<bd>_<sub_ip>_0' not found`.
+    add_files -fileset sources_1 $_xci_path
+}
+
+foreach inst $IP_INSTANCES {
+    lassign $inst inst_name inst_vendor inst_library inst_version inst_module_name
+    create_ip -name $inst_name -vendor $inst_vendor -library $inst_library \
+        -version $inst_version -module_name $inst_module_name
+}
+
+# --- Block designs ---
+# Each BD is copied into a writable sibling of the project for the same
+# reason as configured IPs above (Vivado needs to mutate during
+# `generate_target`). In named-project mode use `add_files` (Vivado
+# auto-tracks the BD's sub-IPs through the project); in `in_memory`
+# mode use `read_bd` (the non-project verb that imports the BD).
+foreach bd $BLOCK_DESIGNS {
+    lassign $bd bd_module_top bd_dir
+    set _bd_parent [expr {$PROJECT_MODE eq "project" ? [file dirname $PROJECT_DIR] : "."}]
+    set _bd_root [expr {$PROJECT_MODE eq "project" ? [file tail $PROJECT_DIR] : "in_memory"}]
+    set _bd_import_dir [file join $_bd_parent "${_bd_root}_imported_bds" $bd_module_top]
+    file mkdir $_bd_import_dir
+    foreach _item [glob -nocomplain -directory $bd_dir *] {
+        file copy -force $_item $_bd_import_dir/
+    }
+    exec chmod -R u+rwX $_bd_import_dir
+    set _bd_path [file join $_bd_import_dir ${bd_module_top}.bd]
+    # `add_files` works in BOTH project and in_memory modes. The
+    # in_memory synth flow uses `add_files` on the BD's `.bd` file so
+    # the project's source-tracking machinery walks the BD's nested
+    # sub-IPs/sub-BDs the same way it does in a named project. Using
+    # `read_bd` in in_memory mode lost the nested sub-IP tracking and
+    # left `synth_design` unable to find the sub-IP modules.
+    add_files -fileset sources_1 $_bd_path
+}
+
+# --- Additional Tcl and constraints ---
+foreach f $TCL_FILES { source $f }
+foreach f $XDC_FILES { read_xdc $f }
+
+set_property top $MODULE_TOP [current_fileset]
+
+# --- Pre-synth hooks ---
+foreach hook $PRE_HOOKS { source $hook }
+
+if {$WITH_SYNTH} {
+    # For every BD and every configured XCI in the project: re-anchor
+    # generated sub-IP paths to the current sandbox by re-running
+    # `generate_target` against the project's gen dir, and (in project
+    # mode) register OOC synth runs so Vivado's source-tracking picks
+    # up the BD's internal sub-IPs (AXI-NoC, PCS/PMA, etc.). Pre-gen
+    # upstream actions (`vivado_xci`, `vivado_block_design`) ship the
+    # IP/BD tree, but the BD's `.bd` file embeds absolute paths to its
+    # sub-IPs at original generation; without this re-anchoring, the
+    # sub-IPs aren't found at synth elaboration and the build fails
+    # with `[Synth 8-439] module '<bd>_<sub_ip>_0' not found`.
+    #
+    # XCIs are forced into inline-synthesis mode (`synth_checkpoint_mode
+    # NONE`) BEFORE `generate_target` so the IP is generated with
+    # inline-synth artifacts from the start. Setting NONE AFTER
+    # `generate_target` is too late: Vivado has already produced the
+    # IP with the default Singular (OOC) mode and a single OOC
+    # checkpoint baked for one generic combination. Any consumer
+    # instantiation that passes different generics then becomes a
+    # `__parameterized<N>` black box at top synth and `opt_design`
+    # fails with `[DRC INBB-3] Black Box Instances: Cell ... has
+    # undefined contents`.
+    # Upgrade any IPs whose IPDEF version drifted between BD/XCI
+    # generation time and synth time. Without this, sub-IPs whose
+    # interface widths changed in the IP catalog stay locked at their
+    # pre-generation snapshot. The BD wrapper then connects 1-bit
+    # OOC-stub signals to ports the live IP catalog declares as
+    # 128-bit (`[Synth 8-689] width (1) of port connection
+    # 'rx_axis_tdata*' does not match port width (128)`), and the
+    # design fails RTL elaboration. `upgrade_ip` is a no-op on IPs
+    # that already match the catalog; it only acts on the locked
+    # subset Vivado surfaces with `[BD 41-1661]`.
+    upgrade_ip -quiet [get_ips -quiet]
+
+    foreach _ip [concat [get_files -quiet "*.bd"] [get_files -quiet "*.xci"]] {
+        if {![get_property IS_GENERATED $_ip]} {
+            # `synth_checkpoint_mode NONE` applies to BOTH `.xci` and
+            # `.bd`. Setting it only on `.xci` left BDs in their
+            # default Singular (OOC) mode — that ships the OOC
+            # checkpoint baked at BD-action time with frozen sub-IP
+            # port widths, which later clashes with the live IP
+            # catalog's wider ports if any sub-IP's IPDEF was bumped
+            # between BD-gen and synth. NONE forces inline synth of
+            # every sub-IP, so the BD wrapper's port widths come from
+            # the same IP catalog the synth project is using.
+            set_property synth_checkpoint_mode NONE $_ip
+            # `synthesis implementation` matches what the upstream IP
+            # pre-generation actions (`vivado_xci`, `vivado_block_design`)
+            # emit, so re-generating with the same target set is a no-op
+            # for anything already staged. `all` additionally emits
+            # simulation/example targets, which
+            # for some Xilinx IPs ships encrypted simulation models and
+            # BFMs into the gen tree that Vivado then auto-includes in
+            # the synth source set under the project's source_mgmt_mode
+            # All policy — inflating the netlist and (empirically)
+            # producing a clock-region placement that fails Phase 2.6.
+            #
+            # NOT `-force`, NOT `reset_target`. A consumer's BD action
+            # may ship a patched tree (e.g. a downstream rule that
+            # strips hard-coded `LOC` properties out of the BD's
+            # internal XDC); regenerating with `-force` would overwrite
+            # the patches with stock Vivado output, re-introducing the
+            # very LOC conflicts the patch removes. The `IS_GENERATED`
+            # guard above means `generate_target` only acts on freshly-
+            # discovered IPs — patched cached outputs are preserved.
+            generate_target {synthesis implementation} $_ip
+            # `create_ip_run` registers an OOC synthesis run with
+            # Vivado's run manager, which only exists in named-project
+            # mode. In `in_memory` mode the call is unavailable; skip
+            # it. With `synth_checkpoint_mode NONE` the IP synthesizes
+            # inline as part of the top design and doesn't need its
+            # own run anyway.
+            if {$PROJECT_MODE eq "project" &&
+                [get_property synth_checkpoint_mode $_ip] ne "None"} {
+                create_ip_run $_ip
+            }
         }
     }
+
+    # The OOC-IP-runs + `launch_runs synth_1` machinery only exists in
+    # named-project mode. In `in_memory` mode there are no managed runs
+    # to enumerate or launch — fall straight through to `synth_design`.
+    if {$PROJECT_MODE eq "project"} {
+        set run_synth [get_runs "synth_1"]
+        set run_list [get_runs -quiet \
+                    -filter "IS_SYNTHESIS == true && NAME != $run_synth"]
+
+        if {[llength $run_list] != 0} {
+            foreach run $run_list {
+                reset_run $run
+            }
+            launch_runs $run_list -jobs $JOBS
+            foreach run $run_list {
+                wait_on_run $run
+                if {[get_property PROGRESS $run] != "100%"} {
+                    puts "ERROR: OOC Synthesis of ${run} failed"
+                    exit 2
+                }
+            }
+        }
+
+        set_property strategy $SYNTH_STRATEGY $run_synth
+        # The managed-run path (`launch_runs synth_1`) takes synth
+        # flags via `STEPS.SYNTH_DESIGN.ARGS.*` properties — it cannot
+        # consume the rule's `synth_args` list directly. If callers
+        # using this invocation mode need extra flags, set them in a
+        # `pre_hooks` script with `set_property -name
+        # {STEPS.SYNTH_DESIGN.ARGS.<FLAG>} -value <val> -objects
+        # [get_runs synth_1]`.
     }
 
-    set_property strategy "{{SYNTH_STRATEGY}}" $run_synth
-    set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-verilog_define __SYNTHESIS__} -objects $run_synth
-
-    launch_runs $run_synth -jobs {{JOBS}}
-    wait_on_run $run_synth
-    if {[get_property PROGRESS $run_synth] != "100%"} {
-    puts "ERROR: Synthesis failed"
-    exit 2
+    switch -- $SYNTH_INVOCATION {
+        "launch_runs" {
+            if {$PROJECT_MODE ne "project"} {
+                error "create_project.tcl.template: SYNTH_INVOCATION 'launch_runs' requires PROJECT_MODE 'project' (managed runs are unavailable in in-memory mode)"
+            }
+            launch_runs $run_synth -jobs $JOBS
+            wait_on_run $run_synth
+            if {[get_property PROGRESS $run_synth] != "100%"} {
+                puts "ERROR: Synthesis failed"
+                exit 2
+            }
+            open_run "synth_1"
+        }
+        "synth_design" {
+            # Direct in-process synth. `auto_detect_xpm` mirrors what
+            # `launch_runs` does internally; without it, XPM-using
+            # designs lose the implicit XPM constraints. User-supplied
+            # flags from `synth_args` are expanded first, then the
+            # rule-controlled `-top $MODULE_TOP` last — Vivado's
+            # last-wins parsing makes the rule's `-top` authoritative
+            # if a caller slips past `validate_args`. The design is
+            # left open after `synth_design` returns, so no
+            # `open_run`.
+            auto_detect_xpm
+            synth_design {*}$SYNTH_ARGS -top $MODULE_TOP
+        }
+        default {
+            error "create_project.tcl.template: unknown SYNTH_INVOCATION '$SYNTH_INVOCATION' (expected launch_runs or synth_design)"
+        }
     }
 
-    open_run "synth_1"
-    write_checkpoint -force {{SYNTH_CHECKPOINT}}
-    report_timing_summary -file {{TIMING_SUMMARY_REPORT}}
-    report_utilization -file {{UTILIZATION_REPORT}}
+    foreach hook $POST_HOOKS { source $hook }
+
+    write_checkpoint -force $SYNTH_CHECKPOINT
+
+    # Bundle XDC files marked as implementation-only (typically shipped by
+    # IP cores: GT_QUAD_BASE / BUFG_GT placement, CLOCK_REGION pins, etc.).
+    # `synth_design` does not apply them, and `write_checkpoint` only
+    # persists already-applied constraints — so a downstream phase that
+    # consumes this checkpoint via `open_checkpoint` is missing them
+    # unless it re-reads the bundle before `opt_design` / `place_design`.
+    # The bundle is plain concatenated XDC; a downstream phase can apply
+    # it with a single `read_xdc <bundle>` call. The XDC source files are
+    # held inside the synth project's working directory, which Bazel
+    # cleans after the action, so the contents must be captured here.
+    if {$IMPL_XDC_BUNDLE ne ""} {
+        set _impl_xdcs [get_files -quiet -filter \
+            {FILE_TYPE == XDC && IS_GENERATED == False && USED_IN_IMPLEMENTATION == True}]
+        set _bundle_fp [open $IMPL_XDC_BUNDLE w]
+        foreach _xdc $_impl_xdcs {
+            puts $_bundle_fp "# === BEGIN: $_xdc ==="
+            if {[catch {
+                set _src_fp [open $_xdc r]
+                puts -nonewline $_bundle_fp [read $_src_fp]
+                close $_src_fp
+            } _err]} {
+                puts $_bundle_fp "# ERROR reading $_xdc: $_err"
+            }
+            puts $_bundle_fp ""
+            puts $_bundle_fp "# === END: $_xdc ==="
+        }
+        close $_bundle_fp
+    }
+
+    foreach entry $REQUESTED_REPORTS {
+        lassign $entry type out_file
+        set cmd [string map [list "{OUT}" $out_file] [dict get $REPORT_COMMANDS $type]]
+        catch [list uplevel #0 $cmd]
+    }
 }

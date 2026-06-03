@@ -1,25 +1,96 @@
-create_project project_1 {{PROJECT_DIR}} -part {{PART_NUMBER}}
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_create_ip_impl`. Everything below is plain Tcl that iterates over
+# the substituted data with static foreach / dict / if commands.
+# ============================================================================
+set PROJECT_DIR   {{PROJECT_DIR}}
+set PART_NUMBER   {{PART_NUMBER}}
+set MODULE_TOP    {{MODULE_TOP}}
+set IP_VENDOR     {{IP_VENDOR}}
+set IP_LIBRARY    {{IP_LIBRARY}}
+set IP_VERSION    {{IP_VERSION}}
+set IP_OUTPUT_DIR {{IP_OUTPUT_DIR}}
+set XCI_NAME      {{XCI_NAME}}
 
-{{HDL_SOURCE_CONTENT}}
+# HDL / constraints / Tcl sources (same shape as create_project).
+set HDL_SOURCES {{HDL_SOURCES}}
+set XDC_FILES   {{XDC_FILES}}
+set TCL_FILES   {{TCL_FILES}}
 
-{{IP_BLOCK_TCL}}
+# IP blocks pulled in transitively.
+set IP_REPOS                {{IP_REPOS}}
+set IP_CONFIGURED_INSTANCES {{IP_CONFIGURED_INSTANCES}}
+set IP_INSTANCES            {{IP_INSTANCES}}
 
-{{TCL_CONTENT}}
+# Encryption. ENCRYPT_KEYFILE is the scalar key path; ENCRYPT_FILES is a list
+# of {lang ext path} tuples (one per file to encrypt). Empty list = no
+# encryption requested.
+set ENCRYPT_KEYFILE {{ENCRYPT_KEYFILE}}
+set ENCRYPT_FILES   {{ENCRYPT_FILES}}
 
-{{CONSTRAINTS_CONTENT}}
+# ============================================================================
+# Script body
+# ============================================================================
+create_project project_1 $PROJECT_DIR -part $PART_NUMBER
 
-set_property top {{MODULE_TOP}} [current_fileset]
+foreach entry $HDL_SOURCES {
+    lassign $entry kind path library standard
+    switch -- $kind {
+        verilog       { read_verilog -library $library $path }
+        systemverilog { read_verilog -library $library -sv $path }
+        vhdl {
+            switch -- $standard {
+                2008    { read_vhdl -vhdl2008 -library $library $path }
+                2019    { read_vhdl -vhdl2019 -library $library $path }
+                default { read_vhdl           -library $library $path }
+            }
+        }
+        import        { import_files $path }
+    }
+}
 
-{{ENCRYPT_CONTENT}}
+if {[llength $IP_REPOS] > 0} {
+    set_property ip_repo_paths $IP_REPOS [current_project]
+    update_ip_catalog
+}
 
-ipx::package_project -vendor {{IP_VENDOR}} -library {{IP_LIBRARY}} -name {{MODULE_TOP}} -version {{IP_VERSION}} -root_dir {{IP_OUTPUT_DIR}} -import_files -taxonomy /UserIP
+foreach ci $IP_CONFIGURED_INSTANCES {
+    lassign $ci ci_module_top ci_repo ci_xci_relpath
+    set _xci_import_dir [file join \
+        [file dirname $PROJECT_DIR] \
+        [file tail $PROJECT_DIR]_imported_xcis \
+        $ci_module_top]
+    file mkdir $_xci_import_dir
+    foreach _item [glob -nocomplain -directory $ci_repo *] {
+        file copy -force $_item $_xci_import_dir/
+    }
+    exec chmod -R u+rwX $_xci_import_dir
+    add_files -fileset sources_1 [file join $_xci_import_dir $ci_xci_relpath]
+}
+
+foreach inst $IP_INSTANCES {
+    lassign $inst inst_name inst_vendor inst_library inst_version inst_module_name
+    create_ip -name $inst_name -vendor $inst_vendor -library $inst_library \
+        -version $inst_version -module_name $inst_module_name
+}
+
+foreach f $TCL_FILES { source $f }
+foreach f $XDC_FILES { read_xdc $f }
+
+set_property top $MODULE_TOP [current_fileset]
+
+foreach entry $ENCRYPT_FILES {
+    lassign $entry lang ext path
+    encrypt -key $ENCRYPT_KEYFILE -lang $lang -ext $ext $path
+}
+
+ipx::package_project -vendor $IP_VENDOR -library $IP_LIBRARY -name $MODULE_TOP -version $IP_VERSION -root_dir $IP_OUTPUT_DIR -import_files -taxonomy /UserIP
 set_property core_revision 2 [ipx::current_core]
 ipx::create_xgui_files [ipx::current_core]
 ipx::update_checksums [ipx::current_core]
 ipx::check_integrity [ipx::current_core]
 ipx::save_core [ipx::current_core]
 
-# To add to project
-set_property  ip_repo_paths {{IP_OUTPUT_DIR}} [current_project]
+set_property ip_repo_paths $IP_OUTPUT_DIR [current_project]
 update_ip_catalog
-create_ip -module_name {{XCI_NAME}} -vendor {{IP_VENDOR}} -library {{IP_LIBRARY}} -name {{MODULE_TOP}} -version {{IP_VERSION}} -dir {{IP_OUTPUT_DIR}}
+create_ip -module_name $XCI_NAME -vendor $IP_VENDOR -library $IP_LIBRARY -name $MODULE_TOP -version $IP_VERSION -dir $IP_OUTPUT_DIR

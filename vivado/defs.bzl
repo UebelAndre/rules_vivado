@@ -20,8 +20,14 @@ load(
     _vivado_create_ip = "vivado_create_ip",
     _vivado_interface_definition = "vivado_interface_definition",
 )
+load("//vivado:packaged_ip.bzl", _vivado_packaged_ip = "vivado_packaged_ip")
 load("//vivado:project.bzl", _vivado_create_project = "vivado_create_project")
-load("//vivado:simulation.bzl", _xsim_test = "xsim_test")
+load(
+    "//vivado:simulation.bzl",
+    _vivado_compile_simlib = "vivado_compile_simlib",
+    _vivado_export_simulation = "vivado_export_simulation",
+    _xsim_test = "xsim_test",
+)
 load(
     "//vivado:synthesis.bzl",
     _vivado_synthesis_optimize = "vivado_synthesis_optimize",
@@ -30,17 +36,19 @@ load(
 load("//vivado:toolchain.bzl", _VivadoToolchainInfo = "VivadoToolchainInfo", _vivado_toolchain = "vivado_toolchain")
 
 VivadoToolchainInfo = _VivadoToolchainInfo
-vivado_toolchain = _vivado_toolchain
-
-vivado_create_project = _vivado_create_project
-vivado_synthesize = _vivado_synthesize
-vivado_synthesis_optimize = _vivado_synthesis_optimize
-vivado_placement = _vivado_placement
-vivado_place_optimize = _vivado_place_optimize
-vivado_routing = _vivado_routing
-vivado_write_bitstream = _vivado_write_bitstream
-vivado_flow = _vivado_flow
-xsim_test = _xsim_test
-vivado_create_ip = _vivado_create_ip
-vivado_interface_definition = _vivado_interface_definition
+vivado_compile_simlib = _vivado_compile_simlib
 vivado_create_interface_ip = _vivado_create_interface_ip
+vivado_create_ip = _vivado_create_ip
+vivado_create_project = _vivado_create_project
+vivado_export_simulation = _vivado_export_simulation
+vivado_flow = _vivado_flow
+vivado_interface_definition = _vivado_interface_definition
+vivado_packaged_ip = _vivado_packaged_ip
+vivado_place_optimize = _vivado_place_optimize
+vivado_placement = _vivado_placement
+vivado_routing = _vivado_routing
+vivado_synthesis_optimize = _vivado_synthesis_optimize
+vivado_synthesize = _vivado_synthesize
+vivado_toolchain = _vivado_toolchain
+vivado_write_bitstream = _vivado_write_bitstream
+xsim_test = _xsim_test

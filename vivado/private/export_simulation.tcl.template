@@ -1,0 +1,154 @@
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_export_simulation_impl`. Everything below is plain Tcl that
+# iterates over the substituted data with static foreach / dict commands.
+# ============================================================================
+set PROJECT_DIR {{PROJECT_DIR}}
+set PART_NUMBER {{PART_NUMBER}}
+set SIM_TOP     {{SIM_TOP}}
+set SIMULATOR   {{SIMULATOR}}
+set EXPORT_DIR  {{EXPORT_DIR}}
+
+set HDL_SOURCES {{HDL_SOURCES}}
+set XDC_FILES   {{XDC_FILES}}
+set TCL_FILES   {{TCL_FILES}}
+
+set IP_REPOS                {{IP_REPOS}}
+set IP_CONFIGURED_INSTANCES {{IP_CONFIGURED_INSTANCES}}
+set IP_INSTANCES            {{IP_INSTANCES}}
+
+set BLOCK_DESIGNS {{BLOCK_DESIGNS}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+# Stage a Vivado project on disk so `export_simulation` has a stable place
+# to trace IP runs from. `-in_memory` mode misses generated sim products for
+# some IP/BD combinations, and the project dir is sandbox-local so the cost
+# is bounded.
+create_project export_project $PROJECT_DIR -part $PART_NUMBER -force
+
+if {[llength $IP_REPOS] > 0} {
+    set_property ip_repo_paths $IP_REPOS [current_project]
+    update_ip_catalog
+}
+
+foreach ci $IP_CONFIGURED_INSTANCES {
+    lassign $ci ci_module_top ci_repo ci_xci_relpath
+    set _xci_import_dir [file join \
+        [file dirname $PROJECT_DIR] \
+        [file tail $PROJECT_DIR]_imported_xcis \
+        $ci_module_top]
+    file mkdir $_xci_import_dir
+    foreach _item [glob -nocomplain -directory $ci_repo *] {
+        file copy -force $_item $_xci_import_dir/
+    }
+    exec chmod -R u+rwX $_xci_import_dir
+    add_files -fileset sources_1 [file join $_xci_import_dir $ci_xci_relpath]
+}
+
+foreach inst $IP_INSTANCES {
+    lassign $inst inst_name inst_vendor inst_library inst_version inst_module_name
+    create_ip -name $inst_name -vendor $inst_vendor -library $inst_library \
+        -version $inst_version -module_name $inst_module_name
+}
+
+foreach bd $BLOCK_DESIGNS {
+    lassign $bd bd_module_top bd_dir
+    set _bd_import_dir [file join \
+        [file dirname $PROJECT_DIR] \
+        [file tail $PROJECT_DIR]_imported_bds \
+        $bd_module_top]
+    file mkdir $_bd_import_dir
+    foreach _item [glob -nocomplain -directory $bd_dir *] {
+        file copy -force $_item $_bd_import_dir/
+    }
+    exec chmod -R u+rwX $_bd_import_dir
+    add_files -fileset sources_1 [file join $_bd_import_dir ${bd_module_top}.bd]
+}
+
+foreach entry $HDL_SOURCES {
+    lassign $entry kind path library standard
+    switch -- $kind {
+        verilog       { read_verilog -library $library $path }
+        systemverilog { read_verilog -library $library -sv $path }
+        vhdl {
+            switch -- $standard {
+                2008    { read_vhdl -vhdl2008 -library $library $path }
+                2019    { read_vhdl -vhdl2019 -library $library $path }
+                default { read_vhdl           -library $library $path }
+            }
+        }
+        import        { import_files $path }
+    }
+}
+
+foreach f $XDC_FILES { read_xdc $f }
+foreach f $TCL_FILES { source $f }
+
+# Ensure the compile order is current so export_simulation traces the right
+# set of sim sources. Without this, BDs that haven't been generated yet can
+# end up missing from the exported source list.
+update_compile_order -fileset sources_1
+
+# Upgrade every IP that was registered with an older catalog before any
+# BD `generate_target` runs. Without this, BDs whose per-IP versions
+# differ from the current Vivado catalog (typical after a Vivado-version
+# bump — the BD was created against catalog vX, the action runs against
+# vX+1) fail with `[BD 41-1664] Unable to generate target(s) ... is
+# locked. List of locked IPs: ...`. `upgrade_ip` is a no-op on IPs that
+# are already current, so this is cheap on the happy path. The
+# `if [llength]` guard avoids a `[get_ips]` empty-list complaint on
+# projects with no IPs at all.
+set _ips [get_ips -quiet]
+if {[llength $_ips]} { upgrade_ip -quiet $_ips }
+
+# Generate sim products for any top-level BD in the project. Path-filter to
+# skip nested child BDs (Vivado errors with [Vivado 12-3563] if you try to
+# regenerate one directly — they're owned by their parent).
+foreach _bd [get_files -quiet "*.bd"] {
+    if {[string match "*/ip/*" $_bd] || [string match "*/bd_*/*" $_bd]} {
+        continue
+    }
+    generate_target simulation $_bd
+}
+
+# `export_simulation` refuses to run unless a top is set on the simulation
+# fileset (`[exportsim-Tcl-70] A simulation top was not set`).
+set_property top $SIM_TOP [current_fileset -simset]
+
+# export_simulation writes:
+#   <EXPORT_DIR>/<SIMULATOR>/compile.do        — Tcl driving the sim compile
+#   <EXPORT_DIR>/<SIMULATOR>/*.{vhd,v,sv}     — unpacked IP/BD sim sources
+# `-export_source_files` makes Vivado physically copy the IP/BD source files
+# into the export tree (otherwise compile.do references project-relative
+# paths that go stale once the sandbox is gone).
+export_simulation \
+    -simulator $SIMULATOR \
+    -directory $EXPORT_DIR \
+    -export_source_files \
+    -force
+
+# `-export_source_files` only copies files in compile_order (.v/.sv/.vhd),
+# not `.vh` Verilog header includes. Copy each header into every IP subdir
+# of the export so `include` lookups resolve via same-dir search (no
+# `+incdir+` patching of compile.do needed).
+set _vh_files [get_files -filter {FILE_TYPE == "Verilog Header"}]
+if {[llength $_vh_files] > 0} {
+    foreach _ip_dir [glob -nocomplain -directory $EXPORT_DIR/$SIMULATOR/srcs/ip -type d "*/*"] {
+        foreach _vh $_vh_files {
+            file copy -force $_vh $_ip_dir/[file tail $_vh]
+        }
+    }
+}
+
+# Post-export sanity check: fail loudly if compile.do is missing.
+set _compile_do $EXPORT_DIR/$SIMULATOR/compile.do
+if {![file exists $_compile_do]} {
+    error "export_simulation produced no compile.do at $_compile_do — the\
+ IP/BD set likely contains no sim sources, or `generate_target simulation`\
+ silently skipped them. Check that every ip_block / block_design has\
+ simulation products in the project before export."
+}
+
+close_project

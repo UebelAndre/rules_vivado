@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# ============================================================================
+# xsim_test wrapper — generated from this template at rule-analysis time by
+# `_xsim_test_impl` in //vivado:simulation.bzl. Consumes the `{export_dir}`
+# TreeArtifact produced by the rule's Vivado action, sources the toolchain's
+# `xilinx_env` (so xsim/xelab/xvlog land on PATH), executes the exported
+# `simulate.sh`, and translates the outcome into Bazel's test contract:
+# real exit code, JUnit XML at $XML_OUTPUT_FILE, sim log + waveform +
+# per-tool logs copied to $TEST_UNDECLARED_OUTPUTS_DIR.
+#
+# All template variables are pre-quoted (bash single-quoted) by the rule
+# impl. Do not add re-quoting here; do not introduce {{...}} tokens beyond
+# the ones declared in _xsim_test_impl's `substitutions` dict.
+# ============================================================================
+set -uo pipefail
+
+TEST_NAME={{TEST_NAME}}
+EXPORT_DIR_REL={{EXPORT_DIR_SHORT_PATH}}
+XILINX_ENV_REL={{XILINX_ENV_SHORT_PATH}}
+ERROR_PATTERN={{ERROR_PATTERN}}
+COMPLETION_PATTERN={{COMPLETION_PATTERN}}
+
+{{ENV_EXPORTS}}
+
+# Locate the runfiles root. Bazel exposes $RUNFILES_DIR when present; fall
+# back to the `<binary>.runfiles` sibling directory.
+if [[ -n "${RUNFILES_DIR:-}" ]]; then
+    RF="$RUNFILES_DIR"
+elif [[ -d "$0.runfiles" ]]; then
+    RF="$0.runfiles"
+else
+    RF="$(dirname "$(readlink -f "$0")").runfiles"
+fi
+
+# Bzlmod repos land under `_main`; legacy workspaces under $TEST_WORKSPACE.
+if [[ -d "$RF/_main" ]]; then
+    WS_ROOT="$RF/_main"
+elif [[ -n "${TEST_WORKSPACE:-}" && -d "$RF/$TEST_WORKSPACE" ]]; then
+    WS_ROOT="$RF/$TEST_WORKSPACE"
+else
+    WS_ROOT="$(find "$RF" -maxdepth 1 -mindepth 1 -type d ! -name 'MANIFEST' | head -1)"
+fi
+
+EXPORT_DIR="$WS_ROOT/$EXPORT_DIR_REL"
+if [[ ! -d "$EXPORT_DIR/xsim" ]]; then
+    echo "ERROR: xsim export not found at $EXPORT_DIR/xsim" >&2
+    ls -la "$EXPORT_DIR/" >&2 || true
+    exit 2
+fi
+
+# Source the Vivado env so xsim/xvlog/xelab resolve on PATH. Optional —
+# some toolchain setups bake the env into the shim or the exec platform.
+if [[ -n "$XILINX_ENV_REL" && -f "$WS_ROOT/$XILINX_ENV_REL" ]]; then
+    # shellcheck disable=SC1090
+    source "$WS_ROOT/$XILINX_ENV_REL"
+fi
+
+# xsim mutates its cwd (writes xsim.dir/, xsim.log, .wdb, .covdb). Runfiles
+# are read-only, so stage a writable copy in $TEST_TMPDIR.
+WORK_DIR="${TEST_TMPDIR:-/tmp}/xsim_work.$$"
+mkdir -p "$WORK_DIR"
+cp -rL "$EXPORT_DIR/xsim/." "$WORK_DIR/"
+chmod -R u+w "$WORK_DIR"
+cd "$WORK_DIR"
+
+SIM_LOG="$WORK_DIR/sim.log"
+
+# Vivado's `export_simulation -simulator xsim` writes `simulate.sh` as the
+# top-level driver; fall through to any other single `.sh` as insurance
+# against a future filename change.
+DRIVER=""
+for candidate in simulate.sh *.sh; do
+    if [[ -f "$candidate" && -x "$candidate" ]]; then
+        DRIVER="$candidate"
+        break
+    fi
+done
+if [[ -z "$DRIVER" ]]; then
+    echo "ERROR: no executable driver script in $WORK_DIR" >&2
+    ls -la "$WORK_DIR/" >&2
+    exit 2
+fi
+
+"./$DRIVER" > "$SIM_LOG" 2>&1
+DRIVER_EXIT=$?
+
+# Undeclared outputs — everything a human might want to see after a failure.
+UNDECLARED="${TEST_UNDECLARED_OUTPUTS_DIR:-}"
+if [[ -n "$UNDECLARED" ]]; then
+    mkdir -p "$UNDECLARED"
+    cp "$SIM_LOG" "$UNDECLARED/sim.log"
+    for tool_log in xsim.log xelab.log xvlog.log xvhdl.log compile.log elaborate.log; do
+        [[ -f "$WORK_DIR/$tool_log" ]] && cp "$WORK_DIR/$tool_log" "$UNDECLARED/"
+    done
+    find "$WORK_DIR" -maxdepth 3 -name '*.wdb' -exec cp {} "$UNDECLARED/" \; 2>/dev/null || true
+fi
+
+# Pass/fail resolution — real exit code first, then log-scan safety net for
+# $error (which xsim reports but does NOT exit nonzero for) and testbenches
+# that hang past $finish.
+STATUS="PASSED"
+FAILURE_MSG=""
+EXIT_CODE=0
+if [[ $DRIVER_EXIT -ne 0 ]]; then
+    STATUS="FAILED"
+    FAILURE_MSG="xsim driver exited with code $DRIVER_EXIT"
+    EXIT_CODE=$DRIVER_EXIT
+elif [[ -n "$ERROR_PATTERN" ]] && grep -qE "$ERROR_PATTERN" "$SIM_LOG"; then
+    STATUS="FAILED"
+    FAILURE_MSG="error pattern matched in simulation log"
+    EXIT_CODE=1
+elif [[ -n "$COMPLETION_PATTERN" ]] && ! grep -qE "$COMPLETION_PATTERN" "$SIM_LOG"; then
+    STATUS="FAILED"
+    FAILURE_MSG="simulation did not complete (no match for /$COMPLETION_PATTERN/)"
+    EXIT_CODE=1
+fi
+
+# JUnit XML — a single testcase per xsim_test target. Frameworks that emit
+# richer per-check reporting (SVUnit, cocotb, UVM) can post-process this in a
+# follow-up; a single testcase already unlocks Bazel's UI, IDE, and CI
+# dashboards.
+XML_FILE="${XML_OUTPUT_FILE:-}"
+if [[ -n "$XML_FILE" ]]; then
+    xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
+    if [[ "$STATUS" == "FAILED" ]]; then
+        FAILURE_ATTR="$(printf '%s' "$FAILURE_MSG" | xml_escape)"
+        FAILURE_BODY="$(tail -80 "$SIM_LOG" | xml_escape)"
+        FAILURES=1
+        FAILURE_XML="<failure message=\"$FAILURE_ATTR\">$FAILURE_BODY</failure>"
+    else
+        FAILURES=0
+        FAILURE_XML=""
+    fi
+    cat > "$XML_FILE" <<XMLEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="$TEST_NAME" tests="1" failures="$FAILURES">
+    <testcase name="$TEST_NAME" classname="xsim">$FAILURE_XML</testcase>
+  </testsuite>
+</testsuites>
+XMLEOF
+fi
+
+if [[ "$STATUS" == "FAILED" ]]; then
+    echo "=== xsim_test FAILED: $FAILURE_MSG ==="
+    tail -80 "$SIM_LOG"
+    exit "$EXIT_CODE"
+fi
+
+echo "=== xsim_test PASSED ==="
+exit 0

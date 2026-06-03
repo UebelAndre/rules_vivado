@@ -1,15 +1,47 @@
-set_param general.maxThreads {{THREADS}}
-open_checkpoint {{CHECKPOINT_IN}}
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_routing_impl`. Everything below is plain Tcl that iterates over
+# the substituted data with static foreach / dict commands.
+# ============================================================================
+set THREADS        {{THREADS}}
+set CHECKPOINT_IN  {{CHECKPOINT_IN}}
+set CHECKPOINT_OUT {{CHECKPOINT_OUT}}
+# Flag list passed through to `route_design` from the rule's
+# `route_args` attr; see the attr docstring for the contract. Rendered
+# as a Tcl word list (`{}` when empty); `{*}`-expanded into the
+# command below. No rule-controlled flags.
+set ROUTE_ARGS     {{ROUTE_ARGS}}
 
-route_design -directive {{ROUTE_DIRECTIVE}}
-report_timing_summary -file {{TIMING_REPORT}}
-report_utilization -file {{UTIL_REPORT}}
-report_route_status -file {{STATUS_REPORT}}
-report_io -file {{IO_REPORT}}
-report_power -file {{POWER_REPORT}}
-report_design_analysis -logic_level_distribution \
- -of_timing_paths [get_timing_paths -max_paths 10000 \
-  -slack_lesser_than 0] \
-   -file {{DESIGN_ANALYSIS_REPORT}}
+# Hook scripts to `source` at the corresponding insertion points.
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
 
-write_checkpoint -force {{CHECKPOINT_OUT}}
+# Reports requested by the rule's `reports` attr.
+#   REPORT_COMMANDS: dict mapping each known report type → its Tcl command
+#                    template (with `{OUT}` placeholder for the output path).
+#   REQUESTED_REPORTS: list of {type out_path} tuples actually emitted.
+set REPORT_COMMANDS    {{REPORT_COMMANDS}}
+set REQUESTED_REPORTS  {{REQUESTED_REPORTS}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+route_design {*}$ROUTE_ARGS
+
+foreach hook $POST_HOOKS { source $hook }
+
+# Each report wrapped in `catch` so a single failure (e.g. report_methodology
+# on an under-constrained design) writes an empty file instead of aborting
+# the whole action.
+foreach entry $REQUESTED_REPORTS {
+    lassign $entry type out_file
+    set cmd [string map [list "{OUT}" $out_file] [dict get $REPORT_COMMANDS $type]]
+    catch [list uplevel #0 $cmd]
+}
+
+write_checkpoint -force $CHECKPOINT_OUT

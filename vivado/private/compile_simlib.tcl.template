@@ -1,0 +1,56 @@
+# ============================================================================
+# Rule-substituted DATA — the complete contract this template has with
+# `_vivado_compile_simlib_impl`. NO_SYSTEMC_COMPILE is now a plain 0/1 flag;
+# the template branches on it via static `if`.
+# ============================================================================
+set INSTALL_ENV_VAR    {{INSTALL_ENV_VAR}}
+set INSTALL_BIN_SUBDIR {{INSTALL_BIN_SUBDIR}}
+set SIMULATOR          {{SIMULATOR}}
+set FAMILY             {{FAMILY}}
+set LANGUAGE           {{LANGUAGE}}
+set LIBRARY            {{LIBRARY}}
+set SIMLIB_DIR         {{SIMLIB_DIR}}
+set NO_SYSTEMC_COMPILE {{NO_SYSTEMC_COMPILE}}
+
+# ============================================================================
+# Script body
+# ============================================================================
+# Compile the Xilinx baseline simulation libraries (unisim, unimacro,
+# secureip, unifast, …) for a third-party simulator. Vivado's
+# `compile_simlib` drives the simulator's compile binary internally — it
+# needs a directory holding the full vendor install (vsimsa AND its peer
+# tools vlib/vlog/vcom/etc.), not just a single binary. Today that means an
+# env-var lookup against the exec platform's install root.
+#
+# Output: `<SIMLIB_DIR>/<simulator>/library.cfg` plus per-library
+# subdirectories with the compiled artifacts.
+if {![info exists ::env($INSTALL_ENV_VAR)]} {
+    error "$INSTALL_ENV_VAR not set — this action must run on an exec\
+ platform that exports the simulator's install root."
+}
+set simulator_exec_path "$::env($INSTALL_ENV_VAR)$INSTALL_BIN_SUBDIR"
+
+# Aldec backends (riviera, activehdl) read+extend `library.cfg` in CWD
+# during compilation, then `compile_simlib` copies the updated catalog to
+# `<SIMLIB_DIR>/library.cfg`. vsimsa doesn't create the file from scratch —
+# seed a stub that includes the simulator's built-in primitives catalog.
+if {[lsearch -exact {riviera activehdl} $SIMULATOR] >= 0} {
+    set f [open "library.cfg" w]
+    puts $f "\$INCLUDE = \"\$VSIMSALIBRARYCFG\""
+    close $f
+}
+
+set extra_flags [list]
+if {$NO_SYSTEMC_COMPILE} {
+    lappend extra_flags -no_systemc_compile
+}
+
+compile_simlib \
+    -simulator $SIMULATOR \
+    -simulator_exec_path $simulator_exec_path \
+    -family $FAMILY \
+    -language $LANGUAGE \
+    -library $LIBRARY \
+    {*}$extra_flags \
+    -directory $SIMLIB_DIR \
+    -force

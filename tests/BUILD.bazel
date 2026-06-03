@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
@@ -19,11 +20,14 @@ load("@rules_verilator//verilator:defs.bzl", "verilator_cc_library")
 load("@rules_verilog//verilog:defs.bzl", "verilog_library")
 load(
     "//vivado:defs.bzl",
+    "vivado_compile_simlib",
     "vivado_create_interface_ip",
     "vivado_create_ip",
     "vivado_create_project",
+    "vivado_export_simulation",
     "vivado_flow",
     "vivado_interface_definition",
+    "vivado_packaged_ip",
     "xsim_test",
 )
 load(":transition.bzl", "with_vivado_version")
@@ -75,6 +79,43 @@ cc_test(
 verilog_library(
     name = "xsim_smoke_tb",
     srcs = ["xsim_smoke_tb.sv"],
+)
+
+# ============================================================================
+# vivado_packaged_ip — `hdl_libraries` (provider-based HDL input) smoke test.
+#
+# Proves the rule accepts `hdl_libraries` and stages each HDL file from the
+# walked `VhdlInfo` / `VerilogInfo` providers alongside any non-HDL files in
+# `srcs`. The action is just `mkdir -p && cp -L`, so Vivado isn't actually
+# invoked — no version/exec constraint is required to run this.
+# ============================================================================
+
+write_file(
+    name = "packaged_ip_hdl_libraries_component_xml",
+    out = "packaged_ip_hdl_libraries_component.xml",
+    content = ["<spirit:component/>"],
+)
+
+write_file(
+    name = "packaged_ip_hdl_libraries_top_sv",
+    out = "packaged_ip_hdl_libraries_top.sv",
+    content = ["module packaged_ip_hdl_libraries_top; endmodule"],
+)
+
+verilog_library(
+    name = "packaged_ip_hdl_libraries_top",
+    srcs = [":packaged_ip_hdl_libraries_top_sv"],
+)
+
+vivado_packaged_ip(
+    name = "packaged_ip_hdl_libraries_repo",
+    srcs = [":packaged_ip_hdl_libraries_component_xml"],
+    hdl_libraries = [":packaged_ip_hdl_libraries_top"],
+)
+
+build_test(
+    name = "packaged_ip_hdl_libraries_test",
+    targets = [":packaged_ip_hdl_libraries_repo"],
 )
 
 xsim_test(
@@ -572,4 +613,74 @@ with_vivado_version(
         ":interface_example_project",
     ],
     vivado_version = "2025.1",
+)
+
+# ============================================================================
+# Simulation precompile rules: vivado_export_simulation + vivado_compile_simlib.
+# Both rules drive Vivado actions that shell out to third-party simulator
+# binaries, so the targets below are tagged `manual` — they don't run on
+# vanilla `bazel test //...` without the right toolchain image. They DO get
+# analysis-built by `bazel build //...` which catches attr/wiring regressions.
+# ============================================================================
+
+# Pull an existing packaged IP through `vivado_export_simulation`. The export
+# rule itself is simulator-agnostic; we cycle through several simulators here
+# to exercise the `simulator` choice list and confirm the per-sim TCL renders.
+# `module_top` is required when `ip_blocks` holds a `vivado_create_ip`-style
+# packaged IP — that IP's provider has neither `configured_instance` nor
+# `instantiable` populated, so the export rule's auto-derive can't pick a
+# sim top and the user has to name it. Passing it explicitly here both
+# unblocks the action AND covers the explicit-`module_top` code path.
+[
+    vivado_export_simulation(
+        name = "weights_replay_and_save_export_{}".format(_sim),
+        ip_blocks = [":weights_replay_and_save_ip"],
+        module_top = "weights_replay_and_save",
+        part_number = "xczu28dr-ffvg1517-2-e",
+        simulator = _sim,
+        tags = ["manual"],
+    )
+    for _sim in [
+        "questa",
+        "riviera",
+        "xcelium",
+        "xsim",
+    ]
+]
+
+# Pre-compile the Xilinx baseline simulation libraries for Riviera against a
+# small silicon family. `family = "zynquplus"` keeps the test scope modest;
+# real users pass whatever family matches their part. Tagged manual because
+# the action requires Riviera to be on the exec platform.
+vivado_compile_simlib(
+    name = "riviera_simlib_zynquplus",
+    family = "zynquplus",
+    simulator = "riviera",
+    tags = ["manual"],
+)
+
+# Exercise the configurable knobs (fix 2/3 from the rules_vivado audit).
+# Analysis-time only: confirms the attrs accept these values and the TCL
+# template renders without `compile_simlib -no_systemc_compile`.
+vivado_compile_simlib(
+    name = "questa_simlib_zynquplus_vhdl_only",
+    family = "zynquplus",
+    language = "vhdl",
+    library = "unisim,unimacro",
+    no_systemc_compile = False,
+    simulator = "questa",
+    tags = ["manual"],
+)
+
+test_suite(
+    name = "all_simulation_precompile_tests",
+    tags = ["manual"],
+    tests = [
+        ":questa_simlib_zynquplus_vhdl_only",
+        ":riviera_simlib_zynquplus",
+        ":weights_replay_and_save_export_questa",
+        ":weights_replay_and_save_export_riviera",
+        ":weights_replay_and_save_export_xcelium",
+        ":weights_replay_and_save_export_xsim",
+    ],
 )
