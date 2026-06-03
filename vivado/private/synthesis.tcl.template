@@ -1,0 +1,189 @@
+# Emitted by `vivado_synthesis`. Sources the `vivado_project`-emitted
+# project script (which does `create_project` + `add_files` + hooks +
+# `generate_target`), then runs the synth portion — OOC synth runs,
+# strategy, `launch_runs` / `synth_design`, post-synth hooks, checkpoint
+# write, impl-XDC bundle capture, and reports.
+
+set JOBS             {{JOBS}}
+set MODULE_TOP       {{MODULE_TOP}}
+set SYNTH_STRATEGY   "{{SYNTH_STRATEGY}}"
+set SYNTH_CHECKPOINT "{{SYNTH_CHECKPOINT}}"
+set IMPL_XDC_BUNDLE  "{{IMPL_XDC_BUNDLE}}"
+# Multi-config XCI consumer instantiations require `synth_design` — the
+# managed-run path re-binds IPs through the IP's synth wrapper at re-load
+# time, which doesn't accept consumer-side generics.
+set SYNTH_INVOCATION "{{SYNTH_INVOCATION}}"
+# `{*}`-expanded into `synth_design` BEFORE the rule-controlled
+# `-top $MODULE_TOP` so the rule's value wins on Vivado's last-wins flag
+# parsing (defence in depth — `validate_args` also rejects `-top`).
+# The `launch_runs` path threads its flags through
+# `STEPS.SYNTH_DESIGN.ARGS.*` properties instead.
+set SYNTH_ARGS       {{SYNTH_ARGS}}
+
+# `project` gets a named on-disk project with Vivado's managed-run
+# infrastructure (`launch_runs`, `synth_1`). `in_memory` calls
+# `create_project -in_memory` — no managed runs. The two modes produce
+# different netlist hierarchies for IPs nested inside block designs:
+# project mode auto-crawls the project gen dir; in_memory requires
+# explicit `read_ip`/`read_bd` + sub-IP source registration.
+set PROJECT_MODE "{{PROJECT_MODE}}"
+set PROJECT_DIR  "{{PROJECT_DIR}}"
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+set REPORT_COMMANDS    {{REPORT_COMMANDS}}
+set REQUESTED_REPORTS  {{REQUESTED_REPORTS}}
+
+# Source the vivado_project script. It reads PROJECT_MODE / PROJECT_DIR
+# from the Tcl variables set above (its own env-var fallback path is
+# unused since we pre-set both).
+source {{PROJECT_TCL}}
+
+# `__SYNTHESIS__` strips simulation-only branches (`$display`, `initial`,
+# sim-only assertions) from synth. Set on the source fileset to feed both
+# the managed-run path (reads fileset properties) and the direct-invocation
+# path (picks up `verilog_define` from the current fileset). Without this,
+# `` `ifdef __SYNTHESIS__ `` branches elaborate their sim-only bodies and
+# hit `[Synth 8-2440]` or a subtly different netlist. Synth-flavored;
+# lives here (not in project.tcl) because simulation flows need
+# `__SYNTHESIS__` UNSET so sim-only bodies execute.
+set_property verilog_define __SYNTHESIS__ [current_fileset]
+
+# Upgrade sub-IPs whose IPDEF version drifted between BD/XCI generation
+# time and synth time. Without this, sub-IPs whose interface widths
+# changed in the catalog stay locked at their pre-generation snapshot,
+# and the BD wrapper connects 1-bit OOC-stub signals to catalog ports
+# declared as e.g. 128-bit (`[Synth 8-689] width (1) of port connection
+# 'rx_axis_tdata*' does not match port width (128)`). `upgrade_ip` is a
+# no-op on already-matching IPs.
+upgrade_ip -quiet [get_ips -quiet]
+
+foreach _ip [concat [get_files -quiet "*.bd"] [get_files -quiet "*.xci"]] {
+    if {![get_property IS_GENERATED $_ip]} {
+        # `synth_checkpoint_mode NONE` MUST be set BEFORE `generate_target`.
+        # Setting it after is too late: Vivado has already produced the IP
+        # in default Singular (OOC) mode with a single OOC checkpoint baked
+        # for one generic combination. Consumer instantiations passing
+        # different generics then become `__parameterized<N>` black boxes
+        # at top synth and `opt_design` fails with `[DRC INBB-3] Black Box
+        # Instances: Cell ... has undefined contents`. Applies to both
+        # `.xci` and `.bd` — BDs left in Singular mode ship a frozen sub-IP
+        # port-width snapshot that later clashes with the live catalog.
+        set_property synth_checkpoint_mode NONE $_ip
+        # NOT `all` (also emits sim/example targets — some Xilinx IPs ship
+        # encrypted sim models and BFMs that then get auto-included under
+        # source_mgmt_mode All, inflating the netlist and empirically
+        # causing Phase 2.6 placement failures).
+        # NOT `-force` / NOT `reset_target`: a consumer's BD action may
+        # ship a patched tree (e.g. LOC properties stripped from the BD's
+        # internal XDC); regenerating with `-force` would overwrite the
+        # patches. The `IS_GENERATED` guard means `generate_target` only
+        # acts on freshly-discovered IPs — patched cached outputs are
+        # preserved.
+        generate_target {synthesis implementation} $_ip
+        # `create_ip_run` creates the managed OOC synth run infrastructure;
+        # `launch_runs` (below) actually runs it. Only meaningful in
+        # named-project mode.
+        if {$PROJECT_MODE eq "project" &&
+            [get_property synth_checkpoint_mode $_ip] ne "None"} {
+            create_ip_run $_ip
+        }
+    }
+}
+
+# PRE_HOOKS (vivado_synthesis's, distinct from project's): fires post-
+# project-setup + elaboration, before synth runs launch. Runs against
+# the fully elaborated design.
+foreach hook $PRE_HOOKS { source $hook }
+
+if {$PROJECT_MODE eq "project"} {
+    set run_synth [get_runs "synth_1"]
+    set run_list [get_runs -quiet \
+                -filter "IS_SYNTHESIS == true && NAME != $run_synth"]
+
+    if {[llength $run_list] != 0} {
+        foreach run $run_list {
+            reset_run $run
+        }
+        launch_runs $run_list -jobs $JOBS
+        foreach run $run_list {
+            wait_on_run $run
+            if {[get_property PROGRESS $run] != "100%"} {
+                puts "ERROR: OOC Synthesis of ${run} failed"
+                exit 2
+            }
+        }
+    }
+
+    set_property strategy $SYNTH_STRATEGY $run_synth
+    # `launch_runs` cannot consume the rule's `synth_args` directly;
+    # callers needing extra flags set them in a `pre_hooks` script with
+    # `set_property -name {STEPS.SYNTH_DESIGN.ARGS.<FLAG>} -value <val>
+    # -objects [get_runs synth_1]`.
+}
+
+switch -- $SYNTH_INVOCATION {
+    "launch_runs" {
+        if {$PROJECT_MODE ne "project"} {
+            error "synthesis.tcl: SYNTH_INVOCATION 'launch_runs' requires PROJECT_MODE 'project' (managed runs are unavailable in in-memory mode)"
+        }
+        launch_runs $run_synth -jobs $JOBS
+        wait_on_run $run_synth
+        if {[get_property PROGRESS $run_synth] != "100%"} {
+            puts "ERROR: Synthesis failed"
+            exit 2
+        }
+        open_run "synth_1"
+    }
+    "synth_design" {
+        # `auto_detect_xpm` mirrors what `launch_runs` does internally;
+        # without it, XPM-using designs lose the implicit XPM constraints.
+        auto_detect_xpm
+        synth_design {*}$SYNTH_ARGS -top $MODULE_TOP
+    }
+    default {
+        error "synthesis.tcl: unknown SYNTH_INVOCATION '$SYNTH_INVOCATION' (expected launch_runs or synth_design)"
+    }
+}
+
+foreach hook $POST_HOOKS { source $hook }
+
+write_checkpoint -force $SYNTH_CHECKPOINT
+
+# Bundle XDCs marked USED_IN_IMPLEMENTATION (typically shipped by IP
+# cores: GT_QUAD_BASE / BUFG_GT placement, CLOCK_REGION pins).
+# `synth_design` does not apply them; `write_checkpoint` only persists
+# already-applied constraints. A downstream phase reads this bundle
+# before `opt_design` / `place_design`. The XDC source files live inside
+# the synth project working directory, which Bazel cleans after the
+# action — contents must be captured here.
+if {$IMPL_XDC_BUNDLE ne ""} {
+    set _impl_xdcs [get_files -quiet -filter \
+        {FILE_TYPE == XDC && IS_GENERATED == False && USED_IN_IMPLEMENTATION == True}]
+    set _bundle_fp [open $IMPL_XDC_BUNDLE w]
+    foreach _xdc $_impl_xdcs {
+        puts $_bundle_fp "# === BEGIN: $_xdc ==="
+        if {[catch {
+            set _src_fp [open $_xdc r]
+            puts -nonewline $_bundle_fp [read $_src_fp]
+            close $_src_fp
+        } _err]} {
+            puts $_bundle_fp "# ERROR reading $_xdc: $_err"
+        }
+        puts $_bundle_fp ""
+        puts $_bundle_fp "# === END: $_xdc ==="
+    }
+    close $_bundle_fp
+}
+
+foreach entry $REQUESTED_REPORTS {
+    lassign $entry type out_file
+    set cmd [string map [list "{OUT}" $out_file] [dict get $REPORT_COMMANDS $type]]
+    if {[catch [list uplevel #0 $cmd] err]} {
+        puts stderr "WARNING: report '$type' failed: $err"
+        set fh [open $out_file w]
+        puts $fh "ERROR: report '$type' failed:\n$err"
+        close $fh
+    }
+}

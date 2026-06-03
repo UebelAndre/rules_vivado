@@ -1,0 +1,32 @@
+# write_hw_platform: emit a `.xsa` archive from a routed checkpoint.
+# Consumes VivadoRoutingCheckpointInfo, produces the Vitis / PetaLinux
+# hardware handoff artifact.
+
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+set XSA_PATH      {{XSA_PATH}}
+set HW_ONLY       {{HW_ONLY}}
+set INCLUDE_BIT   {{INCLUDE_BIT}}
+set WRITE_ARGS    {{WRITE_ARGS}}
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# Build the `write_hw_platform` invocation. `-fixed` covers the
+# single-image (non-DFX) case which is what every current caller wanted.
+# `-hw_only` and `-include_bit` are mutually exclusive at Vivado's level
+# (hw_only implies no bit); the rule's `hw_only` attr wins if both set.
+set _flags [list -fixed -force]
+if {$HW_ONLY} {
+    lappend _flags -hw_only
+} elseif {$INCLUDE_BIT} {
+    lappend _flags -include_bit
+}
+write_hw_platform {*}$_flags {*}$WRITE_ARGS -file $XSA_PATH
+
+foreach hook $POST_HOOKS { source $hook }

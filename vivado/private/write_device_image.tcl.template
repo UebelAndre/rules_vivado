@@ -1,0 +1,92 @@
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+# `NO_PDI` selects between the default in-Vivado wrap and an external
+# wrap:
+#   0: Vivado runs its internal bootgen to write the final `.pdi`
+#      directly.
+#   1: Vivado runs with `-no_pdi`, emitting only the intermediate
+#      `.rcdo` / `.rnpi` files (base name =
+#      `$env(VIVADO_PDI_INTERMEDIATE_BASE)`) plus a `gen_files/`
+#      directory in cwd. A `POST_HOOKS` entry MUST produce the final PDI
+#      at `$env(VIVADO_PDI_OUT)` — Bazel fails the action if it's missing.
+set NO_PDI        {{NO_PDI}}
+# `{*}`-expanded AFTER `-force` and BEFORE the rule's positional output;
+# `validate_args` rejects `-force`, `-file`, and `-no_pdi` so callers
+# can't override rule-declared overwrite policy, output path, or the
+# dedicated `no_pdi` attr.
+set WRITE_ARGS    {{WRITE_ARGS}}
+# TIMING_CHECK ∈ {error, warn, none} — the rule's `timing_check` attr.
+# Post-route timing is a house-style policy call, not a Vivado one, so
+# it's an attr rather than something you fork this template to change.
+set TIMING_CHECK  {{TIMING_CHECK}}
+
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
+
+# Local vars come from Bazel substitutions — authoritative and always
+# present. Publish them as env vars too so POST_HOOKS consume them
+# through the standard `$env(...)` channel (the hook can't see the
+# template's Tcl scope, and Vivado's `source` can't pass args). The
+# `VIVADO_` prefix scopes them to this ruleset so downstream hooks don't
+# collide with unrelated environment.
+set PDI_OUT                              {{DEVICE_IMAGE}}
+set PDI_INTERMEDIATE_BASE                [file rootname $PDI_OUT]
+set ::env(VIVADO_PDI_OUT)                $PDI_OUT
+set ::env(VIVADO_PDI_INTERMEDIATE_BASE)  $PDI_INTERMEDIATE_BASE
+
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# `get_property SLACK` errors when there are no post-route timing paths (no
+# user clock constraints, or Versal-style all-PS routing). Probe the path
+# list first so empty results roll into `""`, which the guards below treat
+# as "unconstrained" rather than as a pass.
+proc rules_vivado_worst_slack {args} {
+    set paths [get_timing_paths -max_paths 1 -nworst 1 {*}$args]
+    if {[llength $paths] == 0} {
+        return ""
+    }
+    return [get_property SLACK [lindex $paths 0]]
+}
+
+# Setup and hold are independent failures. A design can clear setup
+# comfortably (WNS = +0.5) and still hold-violate (WHS = -0.150); a
+# setup-only gate ships that board. Probe both.
+set WNS [rules_vivado_worst_slack -setup]
+set WHS [rules_vivado_worst_slack -hold]
+puts "Post Route WNS = $WNS"
+puts "Post Route WHS = $WHS"
+
+set _violations {}
+if {$WNS ne "" && $WNS < 0} { lappend _violations "setup (WNS = $WNS)" }
+if {$WHS ne "" && $WHS < 0} { lappend _violations "hold (WHS = $WHS)" }
+
+if {[llength $_violations] > 0} {
+    set _msg "Post-route timing not met: [join $_violations {, }]."
+    # `error` (not `puts`) so Bazel surfaces a timing fail as a real action
+    # failure, not "expected output not created".
+    switch -- $TIMING_CHECK {
+        error {
+            error "$_msg Refusing to write device image. Set `timing_check = \"warn\"` on the rule to downgrade this to a warning."
+        }
+        warn {
+            puts "CRITICAL WARNING: $_msg Writing device image anyway (timing_check = warn)."
+        }
+        none {}
+        default {
+            error "write_device_image.tcl: unknown TIMING_CHECK '$TIMING_CHECK' (expected error, warn, or none)"
+        }
+    }
+} elseif {$WNS eq "" && $WHS eq ""} {
+    puts "WARNING: No post-route timing paths found. Writing device image without timing validation."
+}
+
+if {$NO_PDI} {
+    write_device_image -force -no_pdi {*}$WRITE_ARGS $::env(VIVADO_PDI_INTERMEDIATE_BASE)
+} else {
+    write_device_image -force {*}$WRITE_ARGS $::env(VIVADO_PDI_OUT)
+}
+
+foreach hook $POST_HOOKS { source $hook }

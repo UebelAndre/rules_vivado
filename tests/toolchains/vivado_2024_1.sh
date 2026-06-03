@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # Test shim. The toolchain's `vivado` attr tracks this file; `vivado_*`
-# actions invoke it by absolute path. Sourcing `settings64.sh` is left to
-# this shim (it sets `XILINX_VIVADO`, `LD_LIBRARY_PATH`, etc. — things
-# `env` can't compose cleanly). Static env (`XILINXD_LICENSE_FILE`,
-# `HOME`) is set on the toolchain's `env` dict in BUILD.
-source /opt/xilinx/2021.2/Vivado/settings64.sh
+# actions invoke it by absolute path.
+#
+# Bazel strips the action env down to what's declared on the toolchain,
+# so PATH doesn't reach here — restore it with the standard container
+# Vivado bin dir prepended. Falls through to whatever PATH the parent
+# env already had, so a host with a different install works too as
+# long as `vivado` ends up somewhere reachable.
+#
+# `/usr/local/bin` comes first because it holds the container's
+# reproducibility wrapper (SOURCE_DATE_EPOCH, fakedate, Flexera
+# LD_PRELOAD) that must win over the real binary. `/tools/Xilinx/
+# Vivado/2024.2/bin` next so secondary tools (`xvlog`, `xelab`,
+# `xsim`, `vitis_hls`, …) resolve without absolute paths.
+export PATH="/usr/local/bin:/tools/Xilinx/Vivado/2024.2/bin:${PATH:-/usr/bin:/bin}"
 exec vivado "$@"

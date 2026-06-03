@@ -1,14 +1,67 @@
-set_param general.maxThreads {{THREADS}}
-open_checkpoint {{CHECKPOINT_IN}}
+set THREADS       {{THREADS}}
+set CHECKPOINT_IN {{CHECKPOINT_IN}}
+set BITSTREAM     {{BITSTREAM}}
+# `{*}`-expanded AFTER `-force` and BEFORE the rule's positional output;
+# `validate_args` rejects `-force` and `-file` so callers can't override
+# rule-declared overwrite policy or output path.
+set WRITE_ARGS    {{WRITE_ARGS}}
+# TIMING_CHECK ∈ {error, warn, none} — the rule's `timing_check` attr.
+# Post-route timing is a house-style policy call, not a Vivado one, so
+# it's an attr rather than something you fork this template to change.
+set TIMING_CHECK  {{TIMING_CHECK}}
 
-set WNS [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]
-puts "Post Route WNS = $WNS"
+set PRE_HOOKS  {{PRE_HOOKS}}
+set POST_HOOKS {{POST_HOOKS}}
 
-if {$WNS >= 0} {
-    write_bitstream -force {{BITSTREAM}}
-    if {{{WRITE_XSA}}} {
-        write_hw_platform -fixed -include_bit -force -file {{XSA_PATH}}
+set_param general.maxThreads $THREADS
+open_checkpoint $CHECKPOINT_IN
+
+foreach hook $PRE_HOOKS { source $hook }
+
+# `get_property SLACK` errors when there are no post-route timing paths (no
+# user clock constraints, or Versal-style all-PS routing). Probe the path
+# list first so empty results roll into `""`, which the guards below treat
+# as "unconstrained" rather than as a pass.
+proc rules_vivado_worst_slack {args} {
+    set paths [get_timing_paths -max_paths 1 -nworst 1 {*}$args]
+    if {[llength $paths] == 0} {
+        return ""
     }
-} else {
-    puts "Failed to make timing, refusing to make bitstream"
+    return [get_property SLACK [lindex $paths 0]]
 }
+
+# Setup and hold are independent failures. A design can clear setup
+# comfortably (WNS = +0.5) and still hold-violate (WHS = -0.150); a
+# setup-only gate ships that board. Probe both.
+set WNS [rules_vivado_worst_slack -setup]
+set WHS [rules_vivado_worst_slack -hold]
+puts "Post Route WNS = $WNS"
+puts "Post Route WHS = $WHS"
+
+set _violations {}
+if {$WNS ne "" && $WNS < 0} { lappend _violations "setup (WNS = $WNS)" }
+if {$WHS ne "" && $WHS < 0} { lappend _violations "hold (WHS = $WHS)" }
+
+if {[llength $_violations] > 0} {
+    set _msg "Post-route timing not met: [join $_violations {, }]."
+    # `error` (not `puts`) so Bazel surfaces a timing fail as a real action
+    # failure, not "expected output not created".
+    switch -- $TIMING_CHECK {
+        error {
+            error "$_msg Refusing to make bitstream. Set `timing_check = \"warn\"` on the rule to downgrade this to a warning."
+        }
+        warn {
+            puts "CRITICAL WARNING: $_msg Writing bitstream anyway (timing_check = warn)."
+        }
+        none {}
+        default {
+            error "write_bitstream.tcl: unknown TIMING_CHECK '$TIMING_CHECK' (expected error, warn, or none)"
+        }
+    }
+} elseif {$WNS eq "" && $WHS eq ""} {
+    puts "WARNING: No post-route timing paths found. Writing bitstream without timing validation."
+}
+
+write_bitstream -force {*}$WRITE_ARGS $BITSTREAM
+
+foreach hook $POST_HOOKS { source $hook }

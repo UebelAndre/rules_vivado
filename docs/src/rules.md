@@ -6,13 +6,14 @@ registered [`vivado_toolchain`](./toolchains.md).
 
 ## Project setup
 
-- [`vivado_create_project`](./vivado_project.md) — emit a Vivado
-  project without running synthesis (useful for IDE handoff).
+- [`vivado_project`](./vivado_project.md) — emit a TCL script that
+  creates a Vivado project (no Vivado invocation at build time).
+  Consumed by `vivado_synthesis` and by GUI launchers.
 
 ## Synthesis
 
-- [`vivado_synthesize`](./vivado_synthesis.md) — run synthesis from an
-  HDL library and produce a synthesis checkpoint (`.dcp`).
+- [`vivado_synthesis`](./vivado_synthesis.md) — run synthesis on a
+  `vivado_project` and produce a synthesis checkpoint (`.dcp`).
 - [`vivado_synthesis_optimize`](./vivado_synthesis.md) — post-synthesis
   optimization pass on a synthesis checkpoint.
 
@@ -27,29 +28,21 @@ registered [`vivado_toolchain`](./toolchains.md).
 
 ## Bitstream
 
-- [`vivado_write_bitstream`](./vivado_bitstream.md) — emit the final
+- [`vivado_bitstream`](./vivado_bitstream.md) — emit the final
   `.bit` (and optionally `.xsa`) from a routing checkpoint.
-
-## End-to-end flow
-
-- `vivado_flow` — convenience macro (loaded from
-  `@rules_vivado//vivado:defs.bzl`) that chains synthesis → opt →
-  placement → place-opt → routing → bitstream into one target name.
-  See the [Quick start](./index.md#quick-start) for a worked example.
 
 ## IP packaging
 
-- [`vivado_create_ip`](./vivado_ip.md) — package an HDL module as a
+- [`vivado_ip_core`](./vivado_ip.md) — package an HDL module as a
   Vivado IP core.
 - [`vivado_interface_definition`](./vivado_ip.md) — generate IP-XACT
   bus + abstraction definitions from a SystemVerilog interface.
-- [`vivado_create_interface_ip`](./vivado_ip.md) — register an
-  interface definition as an IP catalog entry so block designs can
-  use it.
+- [`vivado_interface_ip`](./vivado_ip.md) — register an interface
+  definition as an IP catalog entry so block designs can use it.
 
 ## Simulation
 
-- [`xsim_test`](./vivado_simulation.md) — run a Vivado XSim
+- [`vivado_xsim_test`](./vivado_simulation.md) — run a Vivado XSim
   simulation as a Bazel `test` target.
 
 ## Toolchain

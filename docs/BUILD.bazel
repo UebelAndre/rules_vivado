@@ -74,17 +74,77 @@ stardoc(
     deps = ["//vivado:bzl_lib"],
 )
 
+stardoc(
+    name = "vivado_hw_platform_doc",
+    out = "src/vivado_hw_platform.md",
+    input = "//vivado:hw_platform.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
+stardoc(
+    name = "vivado_debug_probes_doc",
+    out = "src/vivado_debug_probes.md",
+    input = "//vivado:debug_probes.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
+stardoc(
+    name = "vivado_project_export_doc",
+    out = "src/vivado_project_export.md",
+    input = "//vivado:project_export.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
+stardoc(
+    name = "vivado_block_design_doc",
+    out = "src/vivado_block_design.md",
+    input = "//vivado:block_design.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
+stardoc(
+    name = "vivado_packaged_ip_doc",
+    out = "src/vivado_packaged_ip.md",
+    input = "//vivado:packaged_ip.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
+stardoc(
+    name = "vivado_xdc_library_doc",
+    out = "src/vivado_xdc_library.md",
+    input = "//vivado:xdc_library.bzl",
+    table_of_contents_template = "@io_bazel_stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//vivado:bzl_lib"],
+)
+
 mdbook(
     name = "book",
     srcs = glob(["src/**/*.md"]) + [
         ":vivado_bitstream_doc",
+        ":vivado_block_design_doc",
+        ":vivado_debug_probes_doc",
+        ":vivado_hw_platform_doc",
         ":vivado_implementation_doc",
         ":vivado_ip_doc",
+        ":vivado_packaged_ip_doc",
         ":vivado_project_doc",
+        ":vivado_project_export_doc",
         ":vivado_providers_doc",
         ":vivado_simulation_doc",
         ":vivado_synthesis_doc",
         ":vivado_toolchain_doc",
+        ":vivado_xdc_library_doc",
     ],
     book = "book.toml",
     # Windows builds are typically super slow in CI so they're avoided.
