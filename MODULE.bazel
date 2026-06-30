@@ -19,6 +19,10 @@ bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2", dev_dependency = True)
 bazel_dep(name = "rules_verilator", version = "1.0.0", dev_dependency = True)
 
+# Dev dependencies for docs
+bazel_dep(name = "rules_rust_mdbook", version = "0.71.2", dev_dependency = True)
+bazel_dep(name = "stardoc", version = "0.8.0", dev_dependency = True, repo_name = "io_bazel_stardoc")
+
 register_toolchains(
     "//tests/toolchains:vivado_toolchain_2024_1",
     "//tests/toolchains:vivado_toolchain_2025_1",

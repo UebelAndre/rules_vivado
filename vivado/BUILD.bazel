@@ -1,3 +1,5 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
 package(
     default_applicable_licenses = ["//:package_license"],
     default_visibility = ["//visibility:public"],
@@ -5,4 +7,15 @@ package(
 
 toolchain_type(
     name = "toolchain_type",
+)
+
+bzl_library(
+    name = "bzl_lib",
+    srcs = glob(["*.bzl"]),
+    visibility = ["//visibility:public"],
+    deps = [
+        "//vivado/private:bzl_lib",
+        "@rules_verilog//verilog:defs_bzl",
+        "@rules_vhdl//vhdl:defs_bzl",
+    ],
 )
