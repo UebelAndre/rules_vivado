@@ -1,0 +1,13 @@
+[book]
+authors = [
+    "UebelAndre",
+    "stridge-cruxml",
+    "MrAMS",
+]
+language = "en"
+multilingual = false
+src = "src"
+title = "rules_vivado"
+
+[output.html]
+git-repository-url = "https://github.com/hw-bzl/rules_vivado"
